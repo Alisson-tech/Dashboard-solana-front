@@ -211,8 +211,8 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
           })
         }
         
-        // Check minimum length
-        if (rawData.length < 180) continue
+        // Check minimum length (VideoPool size is typically around ~122 bytes depending on string length)
+        if (rawData.length < 100) continue
         
         // Check each known discriminator
         let matchedType = null
@@ -237,45 +237,54 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
         
         const data = rawData.slice(8)
         
-        // Read prizeVault - must not be System Program
-        const prizeVault = new PublicKey(data.slice(100, 132))
+        // Read video_id: first 4 bytes = length, then the string
+        const videoIdLen = readUInt32LE(data, 32)
+        const videoIdBytes = data.slice(36, 36 + videoIdLen)
+        const originalVideoId = decodeUTF8(videoIdBytes).replace(/\0/g, '').trim()
+        
+        const currentOffset = 36 + videoIdLen
+        
+        // Read prizeVault (32 bytes)
+        const prizeVault = new PublicKey(data.slice(currentOffset, currentOffset + 32))
         
         if (prizeVault.equals(SYSTEM_PROGRAM)) {
           skippedSystemProgram++
           continue
         }
         
-        // Read status
-        const status = data[146]
-        if (status === undefined) continue
-        
-        const poolStatus = status as PoolStatusValue
-        
-        // Only process Open pools
-        if (poolStatus !== PoolStatus.Open) continue
-        
-        // Read video_id: first 4 bytes = length, then the string
-        const videoIdLen = readUInt32LE(data, 32)
-        const videoIdBytes = data.slice(36, 36 + Math.min(videoIdLen, 64))
-        const originalVideoId = decodeUTF8(videoIdBytes).replace(/\0/g, '').trim()
-        
-        // Read expiry timestamp
-        const expiryTimestamp = readInt32LE(data, 159)
-        const now = Math.floor(Date.now() / 1000)
-        const isExpired = expiryTimestamp > 0 && expiryTimestamp <= now
-        
-        // Skip expired pools
-        if (isExpired) {
-          skippedExpired++
-          continue
-        }
-        
-        // Skip pools with prize amount = 0
-        const prizeAmount = Number(readBigUInt64LE(data, 132))
+        // Read prizeAmount (8 bytes)
+        const prizeAmount = Number(readBigUInt64LE(data, currentOffset + 32))
         if (prizeAmount === 0) {
           skippedZeroPrize++
           continue
         }
+
+        // Read scoring_rules (6 bytes total: 2 bytes each for views, likes, comments)
+        const viewsWeight = readUInt16LE(data, currentOffset + 40)
+        const likesWeight = readUInt16LE(data, currentOffset + 42)
+        const commentsWeight = readUInt16LE(data, currentOffset + 44)
+
+        // Read status (1 byte)
+        const status = data[currentOffset + 46]
+        if (status === undefined) continue
+        const poolStatus = status as PoolStatusValue
+        
+        // Removed the hardcoded 'PoolStatus.Open' check so Closed pools can be fetched
+        
+        // Read participantCount (4 bytes)
+        const participantCount = readUInt32LE(data, currentOffset + 47)
+        
+        // Read totalScore (8 bytes)
+        const totalScore = Number(readBigUInt64LE(data, currentOffset + 51))
+        
+        // Read expiryTimestamp as i64 (8 bytes, little-endian signed)
+        const expiryRaw = readBigUInt64LE(data, currentOffset + 59)
+        // Convert unsigned BigInt to signed (i64 range)
+        const expiryTimestamp = expiryRaw > BigInt('9223372036854775807')
+          ? Number(expiryRaw - BigInt('18446744073709551616'))
+          : Number(expiryRaw)
+        const now = Math.floor(Date.now() / 1000)
+        const isExpired = expiryTimestamp > 0 && expiryTimestamp <= now
         
         const poolData: VideoPoolData = {
           creator: new PublicKey(data.slice(0, 32)),
@@ -283,13 +292,13 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
           prizeVault: prizeVault,
           prizeAmount: prizeAmount,
           scoringRules: {
-            viewsWeight: readUInt16LE(data, 140),
-            likesWeight: readUInt16LE(data, 142),
-            commentsWeight: readUInt16LE(data, 144),
+            viewsWeight: viewsWeight,
+            likesWeight: likesWeight,
+            commentsWeight: commentsWeight,
           },
           status: poolStatus,
-          participantCount: readUInt32LE(data, 147),
-          totalScore: Number(readBigUInt64LE(data, 151)),
+          participantCount: participantCount,
+          totalScore: totalScore,
           expiryTimestamp: expiryTimestamp,
         }
         

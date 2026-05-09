@@ -3,7 +3,12 @@
 import { use, useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
-import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
+import dynamic from 'next/dynamic'
+
+const WalletMultiButton = dynamic(
+  async () => (await import('@solana/wallet-adapter-react-ui')).WalletMultiButton,
+  { ssr: false }
+)
 import { MainLayout } from '@/components/layout/main-layout'
 import { LeaderboardTable } from '@/components/bounty/leaderboard-table'
 import { coreApi, Pool } from '@/lib/api'
@@ -15,7 +20,7 @@ import { toast } from 'sonner'
 
 async function sha256(message: string) {
   const msgBuffer = new TextEncoder().encode(message);
-  const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer as any);
   return new Uint8Array(hashBuffer);
 }
 
@@ -190,7 +195,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       )
 
       const [stakeAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('stake'), publicKey.toBuffer()],
+        [Buffer.from('stake_account'), publicKey.toBuffer()],
         PROGRAM_ID
       )
 
@@ -199,22 +204,38 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
         PROGRAM_ID
       )
 
+      toast.info("Preparing transaction...", { id: 'submit_toast' })
+      const tx = new anchor.web3.Transaction()
+
       try {
         const userExists = await connection.getAccountInfo(userProfilePda)
         if (!userExists) {
-            toast.info("Initializing your editor profile...")
-            await program.methods.initializeUser().accounts({
+            console.log("Adding initializeUser instruction")
+            const initIx = await program.methods.initializeUser(["UC_Placeholder"]).accounts({
                 userProfile: userProfilePda,
-                stakeAccount: stakeAccountPda,
+                config: configPda,
                 authority: publicKey,
                 systemProgram: anchor.web3.SystemProgram.programId,
-            } as any).rpc()
+            } as any).instruction()
+            tx.add(initIx)
+        }
+
+        const stakeExists = await connection.getAccountInfo(stakeAccountPda)
+        if (!stakeExists) {
+            console.log("Adding depositStake instruction")
+            const depositIx = await program.methods.depositStake(new anchor.BN(150_000_000)).accounts({
+                stakeAccount: stakeAccountPda,
+                config: configPda,
+                authority: publicKey,
+                systemProgram: anchor.web3.SystemProgram.programId,
+            } as any).instruction()
+            tx.add(depositIx)
         }
       } catch (e) {
-        console.log("User already initialized or error", e)
+        console.log("Error checking account existence", e)
       }
 
-      const tx = await program.methods
+      const joinIx = await program.methods
         .joinPool(Array.from(linkHash), submitUrl, "CHANNEL_ID")
         .accounts({
           entry: entryPda,
@@ -225,10 +246,20 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
           authority: publicKey,
           systemProgram: anchor.web3.SystemProgram.programId,
         } as any)
-        .rpc()
+        .instruction()
 
-      console.log('Submission success! TX:', tx)
-      toast.success('Clip submitted successfully! Waiting for AI Oracle...')
+      tx.add(joinIx)
+
+      const latestBlockhash = await connection.getLatestBlockhash()
+      tx.recentBlockhash = latestBlockhash.blockhash
+      tx.feePayer = publicKey
+
+      const signedTx = await anchorWallet.signTransaction(tx)
+      const txid = await connection.sendRawTransaction(signedTx.serialize())
+      await connection.confirmTransaction(txid)
+
+      console.log('Submission success! TX:', txid)
+      toast.success('Clip submitted successfully! Waiting for AI Oracle...', { id: 'submit_toast' })
       setSubmitSuccess(true)
       setSubmitUrl('')
     } catch (error: any) {

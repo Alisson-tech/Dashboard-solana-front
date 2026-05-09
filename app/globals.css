@@ -57,6 +57,11 @@
   --destructive: #ff6e84;
   --destructive-foreground: #490013;
 
+  /* Warning (Yellow) */
+  --warning: #ffb74d;
+  --warning-dim: #f57c00;
+  --on-warning: #4e342e;
+
   /* Outline */
   --outline: #737679;
   --outline-variant: #45484c;
@@ -141,6 +146,10 @@
   --color-error-dim: var(--error-dim);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  
+  --color-warning: var(--warning);
+  --color-warning-dim: var(--warning-dim);
+  --color-on-warning: var(--on-warning);
   
   --color-outline: var(--outline);
   --color-outline-variant: var(--outline-variant);

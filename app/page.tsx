@@ -2,7 +2,12 @@
 
 import Link from 'next/link'
 import { useWallet } from '@solana/wallet-adapter-react'
-import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
+import dynamic from 'next/dynamic'
+
+const WalletMultiButton = dynamic(
+  async () => (await import('@solana/wallet-adapter-react-ui')).WalletMultiButton,
+  { ssr: false }
+)
 import { mockBounties, formatTimeLeft } from '@/lib/mock-data'
 import { useAuth } from '@/context/auth-context'
 
