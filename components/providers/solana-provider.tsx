@@ -10,10 +10,9 @@ import {
   CoinbaseWalletAdapter,
   TrustWalletAdapter,
 } from '@solana/wallet-adapter-wallets'
+import '@solana/wallet-adapter-react-ui/styles.css'
 import { clusterApiUrl } from '@solana/web3.js'
 import { AuthProvider } from '@/context/auth-context'
-
-require('@solana/wallet-adapter-react-ui/styles.css')
 
 interface SolanaProviderProps {
   children: ReactNode
