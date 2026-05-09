@@ -60,6 +60,25 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // Utility: fetch latest blockhash with retry/backoff to handle transient
+  // RPC "Internal error" failures. Keeps logic local to avoid changing
+  // shared libs; small number of retries is sufficient for devnet hiccups.
+  const getLatestBlockhashWithRetry = async (attempts = 5, baseDelay = 300) => {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await connection.getLatestBlockhash('confirmed')
+      } catch (err: any) {
+        // On last attempt rethrow so callers can handle
+        if (i === attempts - 1) throw err
+        // small backoff
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise(r => setTimeout(r, baseDelay * (i + 1)))
+      }
+    }
+    // Should never reach here
+    throw new Error('Failed to fetch latest blockhash')
+  }
+
   // ─── Step 1: Register Channel ──────────────────────────────────────────────
   // Helpers for dynamic channel fields
   const addChannelField = () => {
@@ -119,8 +138,16 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
       const program = getProgram(connection, wallet)
       const configPda = getGlobalConfigPDA()
 
-      // Get latest blockhash before signing
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed')
+      // Get latest blockhash before signing (with retry for RPC flakiness)
+      let blockhash: string, lastValidBlockHeight: number
+      try {
+        ;({ blockhash, lastValidBlockHeight } = await getLatestBlockhashWithRetry())
+      } catch (bhErr: any) {
+        console.error('Failed to fetch latest blockhash', bhErr)
+        toast.error('Erro ao obter blockhash do RPC. Tente novamente em alguns segundos ou mude o endpoint RPC.')
+        setIsSubmitting(false)
+        return
+      }
 
       const sig = await (program.methods as any)
         .initializeUser(channelArray)
@@ -184,8 +211,16 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
       const program = getProgram(connection, wallet)
       const configPda = getGlobalConfigPDA()
 
-      // Get latest blockhash before signing
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed')
+      // Get latest blockhash before signing (with retry for RPC flakiness)
+      let blockhash: string, lastValidBlockHeight: number
+      try {
+        ;({ blockhash, lastValidBlockHeight } = await getLatestBlockhashWithRetry())
+      } catch (bhErr: any) {
+        console.error('Failed to fetch latest blockhash', bhErr)
+        toast.error('Erro ao obter blockhash do RPC. Tente novamente em alguns segundos ou mude o endpoint RPC.')
+        setIsSubmitting(false)
+        return
+      }
 
       const sig = await (program.methods as any)
         .depositStake(new anchor.BN(amount))
@@ -214,7 +249,12 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
       await refresh()
     } catch (e: any) {
       console.error(e)
-      toast.error('Failed to deposit stake: ' + (e?.message || 'Unknown error'))
+      // Provide more helpful hint when the RPC fails to return blockhash
+      if (e && e.message && e.message.includes('failed to get latest blockhash')) {
+        toast.error('RPC falhou ao obter o blockhash. Tente trocar de endpoint RPC ou aguarde alguns segundos e tente novamente.')
+      } else {
+        toast.error('Failed to deposit stake: ' + (e?.message || 'Unknown error'))
+      }
     } finally {
       setIsSubmitting(false)
     }
