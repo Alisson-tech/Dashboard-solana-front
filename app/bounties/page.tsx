@@ -2,46 +2,52 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useConnection } from '@solana/wallet-adapter-react'
 import { MainLayout } from '@/components/layout/main-layout'
 import { formatTimeLeft, getCategoryColor } from '@/lib/mock-data'
 import { coreApi, Pool } from '@/lib/api'
 import { toast } from 'sonner'
+import { getPools, PoolStatus } from '@/lib/solana'
 
 export default function BountiesPage() {
   const [pools, setPools] = useState<Pool[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const { connection } = useConnection()
 
   useEffect(() => {
     const fetchPools = async () => {
+      if (!connection) return
+
       try {
-        const data = await coreApi.getPools({ status: 'OPEN' })
-        if (data.items.length > 0) {
-          setPools(data.items)
-        } else {
-          const { mockBounties } = await import('@/lib/mock-data')
-          const mockPools: Pool[] = mockBounties.map(b => ({
-            pda_address: b.id,
-            creator_wallet: 'DemoOwner',
-            original_video_id: b.hashtag,
-            prize_amount: b.prizePool * 1e9,
-            participant_count: b.totalClips,
-            status: 'OPEN' as const,
-            expiry_timestamp: b.deadline.toISOString(),
-            total_score: 0,
-            scoring_rules: { views_weight: 50, likes_weight: 30, comments_weight: 20 }
-          }))
-          setPools(mockPools)
-        }
+        const poolsFromChain = await getPools(connection)
+        
+        const mappedPools: Pool[] = poolsFromChain.map(p => {
+          // Clean up the original video ID - remove null chars and trim
+          const cleanVideoId = p.originalVideoId.replace(/\0/g, '').trim()
+          return {
+            pda_address: p.prizeVault.toBase58(),
+            creator_wallet: p.creator.toBase58(),
+            original_video_id: cleanVideoId || 'Unknown',
+            prize_amount: p.prizeAmount,
+            participant_count: p.participantCount,
+            status: p.status === PoolStatus.Open ? 'OPEN' as const : p.status === PoolStatus.Distributed ? 'DISTRIBUTED' as const : 'CLOSED' as const,
+            expiry_timestamp: new Date(p.expiryTimestamp * 1000).toISOString(),
+            total_score: p.totalScore,
+            scoring_rules: { views_weight: p.scoringRules.viewsWeight, likes_weight: p.scoringRules.likesWeight, comments_weight: p.scoringRules.commentsWeight },
+          }
+        })
+        setPools(mappedPools)
       } catch (error) {
         console.error('Error fetching pools:', error)
-        toast.error('Failed to load bounties from API')
+        toast.error('Failed to load pools from blockchain')
+        setPools([])
       } finally {
         setIsLoading(false)
       }
     }
 
     fetchPools()
-  }, [])
+  }, [connection])
 
   return (
     <MainLayout showSidebar={true} showHeader={false}>
@@ -100,14 +106,16 @@ export default function BountiesPage() {
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {isLoading ? (
             Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-[400px] animate-pulse rounded-2xl bg-surface-container-low"></div>
+              <div key={`loading-${i}`} className="h-[400px] animate-pulse rounded-2xl bg-surface-container-low"></div>
             ))
           ) : pools.length === 0 ? (
             <div className="col-span-full py-20 text-center">
               <p className="text-on-surface-variant text-lg">No active bounties found.</p>
             </div>
           ) : (
-            pools.map((pool) => {
+            pools.map((pool, index) => {
+              // Create a unique key using index to avoid duplicates
+              const uniqueKey = `${pool.pda_address}-${index}`
               const deadline = new Date(pool.expiry_timestamp)
               const timeLeft = formatTimeLeft(deadline)
               const isEndingSoon =
@@ -116,7 +124,7 @@ export default function BountiesPage() {
 
               return (
                 <Link
-                  key={pool.pda_address}
+                  key={uniqueKey}
                   href={`/bounties/${pool.pda_address}`}
                   className="group overflow-hidden rounded-2xl border border-outline-variant/10 bg-surface-container-low transition-all hover:border-primary/30 hover:shadow-xl"
                 >
@@ -145,10 +153,10 @@ export default function BountiesPage() {
                   <div className="p-6">
                     <div className="mb-4">
                       <h3 className="mb-1 text-lg font-bold text-on-surface truncate">
-                        Challenge #{pool.pda_address.slice(0, 8)}
+                        Challenge #{pool.original_video_id}
                       </h3>
                       <span className="text-sm text-secondary">
-                        Video: {pool.original_video_id}
+                        by {pool.creator_wallet.slice(0, 4)}...{pool.creator_wallet.slice(-4)}
                       </span>
                     </div>
 

@@ -8,6 +8,7 @@ import { MainLayout } from '@/components/layout/main-layout'
 import { LeaderboardTable } from '@/components/bounty/leaderboard-table'
 import { coreApi, Pool } from '@/lib/api'
 import { getProgram, PROGRAM_ID } from '@/lib/anchor/program'
+import { getPools, PoolStatus } from '@/lib/solana'
 import { PublicKey } from '@solana/web3.js'
 import * as anchor from '@coral-xyz/anchor'
 import { toast } from 'sonner'
@@ -99,33 +100,47 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
 
   useEffect(() => {
     const fetchPool = async () => {
+      if (!connection) {
+        setIsLoading(false)
+        return
+      }
+
       try {
-        const data = await coreApi.getPool(poolPda)
-        setPool(data)
+        // Fetch from blockchain
+        const allPools = await getPools(connection)
+        
+        // Find the specific pool by prizeVault address
+        const foundPool = allPools.find(p => p.prizeVault.toBase58() === poolPda)
+        
+        if (foundPool) {
+          setPool({
+            pda_address: foundPool.prizeVault.toBase58(),
+            creator_wallet: foundPool.creator.toBase58(),
+            original_video_id: foundPool.originalVideoId,
+            prize_amount: foundPool.prizeAmount,
+            participant_count: foundPool.participantCount,
+            status: 'OPEN' as const,
+            expiry_timestamp: new Date(foundPool.expiryTimestamp * 1000).toISOString(),
+            total_score: foundPool.totalScore,
+            scoring_rules: { 
+              views_weight: foundPool.scoringRules.viewsWeight, 
+              likes_weight: foundPool.scoringRules.likesWeight, 
+              comments_weight: foundPool.scoringRules.commentsWeight 
+            }
+          })
+        } else {
+          // Pool not found or expired - try to get from all accounts directly
+          console.log('Pool not found in filtered list, trying to get from chain directly')
+        }
       } catch (error) {
         console.error('Error fetching pool details:', error)
-        const { mockBounties } = await import('@/lib/mock-data')
-        const mockBounty = mockBounties.find(b => b.id === poolPda)
-        if (mockBounty) {
-          setPool({
-            pda_address: mockBounty.id,
-            creator_wallet: 'DemoOwner',
-            original_video_id: mockBounty.hashtag,
-            prize_amount: mockBounty.prizePool * 1e9,
-            participant_count: mockBounty.totalClips,
-            status: 'OPEN' as const,
-            expiry_timestamp: mockBounty.deadline.toISOString(),
-            total_score: 0,
-            scoring_rules: { views_weight: 50, likes_weight: 30, comments_weight: 20 }
-          })
-        }
       } finally {
         setIsLoading(false)
       }
     }
 
     fetchPool()
-  }, [poolPda])
+  }, [poolPda, connection])
 
   const handleSubmit = async () => {
     if (!submitUrl.trim() || !pool) {

@@ -4,10 +4,20 @@ import Link from 'next/link'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { mockBounties, formatTimeLeft } from '@/lib/mock-data'
+import { useAuth } from '@/context/auth-context'
 
 export default function HomePage() {
   const { publicKey } = useWallet()
+  const { isOnboarded, role, isLoading } = useAuth()
   const connected = !!publicKey
+
+  console.log('HomePage render:', { isOnboarded, role, isLoading, connected })
+
+  const getDashboardUrl = () => {
+    console.log('getDashboardUrl:', { isOnboarded, isLoading, role })
+    if (!isOnboarded || isLoading) return '/onboarding'
+    return role === 'creator' ? '/dashboard' : '/editor-dashboard'
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -63,13 +73,13 @@ export default function HomePage() {
             </p>
 
             <div className="flex flex-col gap-4 sm:flex-row">
-              {connected ? (
+              {connected && !isLoading ? (
                 <Link
-                  href="/dashboard"
+                  href={getDashboardUrl()}
                   className="gradient-solana flex items-center gap-3 rounded-xl px-8 py-4 font-bold text-on-primary-fixed shadow-[0_20px_40px_-10px_rgba(52,254,160,0.3)] transition-transform hover:scale-[1.02] active:scale-95"
                 >
                   <span className="material-symbols-outlined">dashboard</span>
-                  Go to Dashboard
+                  {isOnboarded ? 'Go to Dashboard' : 'Complete Onboarding'}
                 </Link>
               ) : (
                 <WalletMultiButton />

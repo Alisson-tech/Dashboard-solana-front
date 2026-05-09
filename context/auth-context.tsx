@@ -2,8 +2,14 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useWallet } from '@solana/wallet-adapter-react'
+import { useConnection } from '@solana/wallet-adapter-react'
 import { useRouter, usePathname } from 'next/navigation'
-import { coreApi } from '@/lib/api'
+import { PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js'
+import {
+  getUserProfilePDA,
+  getUserProfile,
+  PROGRAM_PUBKEY,
+} from '@/lib/solana'
 
 export type UserRole = 'creator' | 'editor' | null
 
@@ -28,7 +34,8 @@ const AuthContext = createContext<AuthContextValue>({
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { publicKey } = useWallet()
+  const { publicKey, signTransaction } = useWallet()
+  const { connection } = useConnection()
   const router = useRouter()
   const pathname = usePathname()
   const [role, setRole] = useState<UserRole>(null)
@@ -38,33 +45,77 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const walletAddress = publicKey?.toBase58() || null
 
   const checkExistingUser = useCallback(async () => {
-    if (!walletAddress) {
+    if (!publicKey || !connection) {
       setIsLoading(false)
       return
     }
 
     try {
-      const user = await coreApi.getUser(walletAddress)
-      if (user?.role) {
-        setRole(user.role)
+      const userProfile = await getUserProfile(connection, publicKey)
+      console.log('UserProfile:', userProfile)
+      
+      if (userProfile && !userProfile.isBanned) {
+        setRole(userProfile.role)
         setIsOnboarded(true)
+        console.log('Set role:', userProfile.role)
       } else {
         setIsOnboarded(false)
         setRole(null)
       }
-    } catch {
+    } catch (e) {
+      console.error('Error checking user:', e)
       setIsOnboarded(false)
       setRole(null)
     } finally {
       setIsLoading(false)
     }
-  }, [walletAddress])
+  }, [publicKey, connection])
 
   const completeOnboarding = useCallback(async (selectedRole: 'creator' | 'editor') => {
-    if (!walletAddress) return
+    if (!publicKey || !signTransaction || !connection) return
 
     try {
-      await coreApi.createUser({ walletAddress, role: selectedRole })
+      const authority = publicKey
+      const userProfilePDA = getUserProfilePDA(authority)
+      const globalConfigPDA = PublicKey.findProgramAddressSync(
+        [Buffer.from('global_config_v1')],
+        PROGRAM_PUBKEY
+      )[0]
+
+      const discriminator = new Uint8Array([111, 17, 185, 250, 60, 122, 38, 254])
+      
+      const roleByte = selectedRole === 'creator' ? 0 : 1
+      
+      const channelIdsData = new Uint8Array(4)
+      channelIdsData.set([0x00, 0x00, 0x00, 0x00], 0)
+      
+      const data = new Uint8Array(13)
+      data.set(discriminator, 0)
+      data.set([roleByte], 8)
+      data.set(channelIdsData, 9)
+
+      const systemProgram = new PublicKey('11111111111111111111111111111111')
+
+      const ix = new TransactionInstruction({
+        programId: PROGRAM_PUBKEY,
+        keys: [
+          { pubkey: userProfilePDA, isSigner: false, isWritable: true },
+          { pubkey: globalConfigPDA, isSigner: false, isWritable: false },
+          { pubkey: authority, isSigner: true, isWritable: true },
+          { pubkey: systemProgram, isSigner: false, isWritable: false },
+        ],
+        data: Buffer.from(data),
+      })
+
+      const tx = new Transaction().add(ix)
+      tx.feePayer = authority
+      const { blockhash } = await connection.getLatestBlockhash()
+      tx.recentBlockhash = blockhash
+
+      const signedTx = await signTransaction(tx)
+      
+      await connection.sendRawTransaction(signedTx.serialize())
+
       setRole(selectedRole)
       setIsOnboarded(true)
 
@@ -74,21 +125,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         router.push('/editor-dashboard')
       }
     } catch (error) {
-      console.error('Failed to save role:', error)
+      console.error('Failed to create user:', error)
     }
-  }, [walletAddress, router])
+  }, [publicKey, signTransaction, connection, router])
 
   useEffect(() => {
-    if (walletAddress) {
+    if (walletAddress && connection) {
       checkExistingUser()
     } else {
       setRole(null)
       setIsOnboarded(false)
       setIsLoading(false)
     }
-  }, [walletAddress, checkExistingUser])
+  }, [walletAddress, connection, checkExistingUser])
 
   useEffect(() => {
+    console.log('Auth redirect check:', { isLoading, walletAddress, isOnboarded, role, pathname })
+    
     if (isLoading || !walletAddress) return
 
     const publicRoutes = ['/', '/bounties', '/support', '/docs']
@@ -96,16 +149,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (isPublic) return
 
-    if (!isOnboarded && pathname !== '/onboarding') {
-      router.push('/onboarding')
+    // Redirect from onboarding if already onboarded
+    if (isOnboarded && pathname === '/onboarding') {
+      router.push(role === 'creator' ? '/dashboard' : '/editor-dashboard')
+      return
     }
 
-    if (isOnboarded) {
-      if (role === 'creator' && pathname === '/editor-dashboard') {
-        router.push('/dashboard')
-      }
-      if (role === 'editor' && (pathname === '/dashboard' || pathname === '/create' || pathname === '/analytics')) {
+    // Redirect to onboarding if not onboarded
+    if (!isOnboarded && pathname !== '/onboarding') {
+      router.push('/onboarding')
+      return
+    }
+
+    // Role-based redirects
+    if (isOnboarded && role) {
+      console.log('Checking role redirect:', { role, pathname })
+      
+      // Editor trying to access creator pages
+      if (role === 'editor' && (
+        pathname === '/dashboard' || 
+        pathname === '/create' || 
+        pathname === '/analytics' ||
+        pathname === '/settings'
+      )) {
+        console.log('Redirecting editor from creator page to editor-dashboard')
         router.push('/editor-dashboard')
+        return
+      }
+      
+      // Creator trying to access editor pages  
+      if (role === 'creator' && pathname === '/editor-dashboard') {
+        console.log('Redirecting creator from editor page to dashboard')
+        router.push('/dashboard')
+        return
       }
     }
   }, [isLoading, walletAddress, isOnboarded, role, pathname, router])

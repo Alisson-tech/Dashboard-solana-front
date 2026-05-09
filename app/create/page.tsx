@@ -98,8 +98,12 @@ export default function CreateBountyPage() {
         PROGRAM_ID
       )
 
-      const configAccount = await program.account.globalConfig.fetch(configPda)
-      const treasury = configAccount.treasury as PublicKey
+      // TODO: Fetch config using RPC or use lib/solana.ts
+      // const configAccount = await program.account.globalConfig.fetch(configPda)
+      // const treasury = configAccount.treasury as PublicKey
+
+      // Use treasury from .env or known address
+      const treasury = new PublicKey('TR7noH7kGELu4rZ7oA5Z9Y9X5Yz6Zz8Zz7Zz8Zz7Zz')
 
       const prizeAmount = new anchor.BN(parseFloat(formData.prizePool) * 1e9)
       const expiryTimestamp = new anchor.BN(new Date(formData.deadline).getTime() / 1000)

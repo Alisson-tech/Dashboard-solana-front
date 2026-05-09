@@ -11,7 +11,6 @@ import {
   TrustWalletAdapter,
 } from '@solana/wallet-adapter-wallets'
 import '@solana/wallet-adapter-react-ui/styles.css'
-import { clusterApiUrl } from '@solana/web3.js'
 import { AuthProvider } from '@/context/auth-context'
 
 interface SolanaProviderProps {
@@ -19,7 +18,7 @@ interface SolanaProviderProps {
 }
 
 export function SolanaProvider({ children }: SolanaProviderProps) {
-  const endpoint = useMemo(() => clusterApiUrl('devnet'), [])
+  const endpoint = useMemo(() => process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://api.devnet.solana.com', [])
 
   const wallets = useMemo(
     () => [
