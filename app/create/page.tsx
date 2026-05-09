@@ -1,10 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { MainLayout } from '@/components/layout/main-layout'
 import { getProgram, PROGRAM_ID } from '@/lib/anchor/program'
+import { getGlobalConfig } from '@/lib/solana'
 import * as anchor from '@coral-xyz/anchor'
 import { PublicKey } from '@solana/web3.js'
 import { toast } from 'sonner'
@@ -18,12 +19,13 @@ interface FormData {
 }
 
 export default function CreateBountyPage() {
-  const { publicKey, wallet, connected } = useWallet()
+  const { publicKey, wallet, connected, signTransaction, signAllTransactions } = useWallet()
   const { connection } = useConnection()
 
-  const [currentStep, setCurrentStep] = useState(1)
   const [isCreating, setIsCreating] = useState(false)
   const [showSuccess, setShowSuccess] = useState(false)
+  const [treasury, setTreasury] = useState<string>('')
+  const [isLoadingTreasury, setIsLoadingTreasury] = useState(true)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     hashtag: '',
@@ -31,6 +33,31 @@ export default function CreateBountyPage() {
     prizePool: '5.00',
     deadline: '',
   })
+
+  useEffect(() => {
+    const fetchTreasury = async () => {
+      if (!connection) {
+        setIsLoadingTreasury(false)
+        return
+      }
+      
+      try {
+        const config = await getGlobalConfig(connection)
+        if (config?.treasury) {
+          setTreasury(config.treasury.toString())
+          console.log('Treasury fetched:', config.treasury.toString())
+        } else {
+          console.warn('GlobalConfig not found or treasury not set')
+        }
+      } catch (error) {
+        console.error('Error fetching treasury:', error)
+      } finally {
+        setIsLoadingTreasury(false)
+      }
+    }
+
+    fetchTreasury()
+  }, [connection])
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
@@ -43,11 +70,7 @@ export default function CreateBountyPage() {
   const totalEscrow = parseFloat(formData.prizePool || '0') + platformFee
 
   const handleCreateBounty = async () => {
-    if (currentStep < 3) {
-      setCurrentStep((prev) => prev + 1)
-      return
-    }
-
+    // Validate all fields
     if (!formData.name || !formData.hashtag || !formData.prizePool || !formData.deadline) {
       toast.error('Please fill in all fields')
       return
@@ -64,12 +87,12 @@ export default function CreateBountyPage() {
       const anchorWallet = {
         publicKey,
         signTransaction: async (tx: any) => {
-          const signer = (wallet as any).signTransaction
-          return signer(tx)
+          if (!signTransaction) throw new Error('Wallet does not support signTransaction')
+          return signTransaction(tx)
         },
         signAllTransactions: async (txs: any[]) => {
-          const signer = (wallet as any).signAllTransactions
-          return signer(txs)
+          if (!signAllTransactions) throw new Error('Wallet does not support signAllTransactions')
+          return signAllTransactions(txs)
         },
       }
 
@@ -82,6 +105,12 @@ export default function CreateBountyPage() {
         [Buffer.from('pool'), Buffer.from(originalVideoId)],
         PROGRAM_ID
       )
+
+      // Check if pool already exists
+      const existingPool = await connection.getAccountInfo(poolPda)
+      if (existingPool) {
+        throw new Error('A pool for this video already exists. Please use a different video URL.')
+      }
 
       const [prizeVaultPda] = PublicKey.findProgramAddressSync(
         [Buffer.from('vault'), poolPda.toBuffer()],
@@ -98,15 +127,78 @@ export default function CreateBountyPage() {
         PROGRAM_ID
       )
 
-      // TODO: Fetch config using RPC or use lib/solana.ts
-      // const configAccount = await program.account.globalConfig.fetch(configPda)
-      // const treasury = configAccount.treasury as PublicKey
+      // Verify GlobalConfig exists and belongs to our program
+      const configAccount = await connection.getAccountInfo(configPda)
+      if (!configAccount) {
+        throw new Error('Platform not initialized. Please contact the admin to initialize the platform first.')
+      }
 
-      // Use treasury from .env or known address
-      const treasury = new PublicKey('TR7noH7kGELu4rZ7oA5Z9Y9X5Yz6Zz8Zz7Zz8Zz7Zz')
+      // Use treasury from GlobalConfig (fetched on page load)
+      if (!treasury) {
+        throw new Error('Treasury not loaded. Please refresh the page.')
+      }
+      const treasuryPubkey = new PublicKey(treasury)
 
       const prizeAmount = new anchor.BN(parseFloat(formData.prizePool) * 1e9)
-      const expiryTimestamp = new anchor.BN(new Date(formData.deadline).getTime() / 1000)
+      
+      // Parse Brazilian date format (DD/MM/YYYY) to Unix timestamp
+      function parseBrazilianDate(dateStr: string): number {
+        // Try Brazilian format DD/MM/YYYY
+        const brazilianFormat = /^(\d{2})\/(\d{2})\/(\d{4})$/
+        const match = dateStr.match(brazilianFormat)
+        
+        if (match) {
+          const [, day, month, year] = match
+          // Create date in UTC to avoid timezone issues
+          const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), 23, 59, 59)
+          return Math.floor(date.getTime() / 1000)
+        }
+        
+        // Try ISO format YYYY-MM-DD (for date input fallback)
+        const isoDate = new Date(dateStr)
+        if (!isNaN(isoDate.getTime())) {
+          return Math.floor(isoDate.getTime() / 1000)
+        }
+        
+        // Invalid date
+        return NaN
+      }
+
+      const deadlineTimestamp = parseBrazilianDate(formData.deadline)
+      const nowTimestamp = Math.floor(Date.now() / 1000)
+      
+      // Validate deadline format
+      if (isNaN(deadlineTimestamp)) {
+        throw new Error('Invalid date format. Please use DD/MM/YYYY format (e.g., 20/10/2026)')
+      }
+
+      // Debug logs
+      console.log('=== DEBUG CREATE POOL ===')
+      console.log('originalVideoId:', originalVideoId)
+      console.log('prizeAmount (lamports):', prizeAmount.toString())
+      console.log('prizeAmount (SOL):', parseFloat(formData.prizePool))
+      console.log('deadline input:', formData.deadline)
+      console.log('deadlineTimestamp:', deadlineTimestamp)
+      console.log('nowTimestamp:', nowTimestamp)
+      console.log('isInPast:', deadlineTimestamp <= nowTimestamp)
+      console.log('poolPda:', poolPda.toString())
+      console.log('prizeVaultPda:', prizeVaultPda.toString())
+      console.log('creatorStatsPda:', creatorStatsPda.toString())
+      console.log('configPda:', configPda.toString())
+      console.log('treasuryPubkey:', treasuryPubkey.toString())
+      console.log('=========================')
+
+      // Validate deadline is in the future
+      if (deadlineTimestamp <= nowTimestamp) {
+        throw new Error('Deadline must be in the future. Please select a future date.')
+      }
+
+      const expiryTimestamp = new anchor.BN(deadlineTimestamp)
+
+      // Validate prize amount
+      if (parseFloat(formData.prizePool) <= 0) {
+        throw new Error('Prize amount must be greater than 0')
+      }
 
       const scoringRules = {
         viewsWeight: 5000,
@@ -114,22 +206,69 @@ export default function CreateBountyPage() {
         commentsWeight: 2000,
       }
 
-      const tx = await program.methods
+      // Build the transaction using Anchor
+      const transaction = await program.methods
         .createPool(originalVideoId, prizeAmount, scoringRules, expiryTimestamp)
         .accounts({
           pool: poolPda,
           prizeVault: prizeVaultPda,
           creatorStats: creatorStatsPda,
           config: configPda,
-          treasury: treasury,
+          treasury: treasuryPubkey,
           creator: anchorWallet.publicKey,
           systemProgram: anchor.web3.SystemProgram.programId,
         } as any)
-        .rpc()
+        .transaction()
 
-      console.log('Bounty created! TX:', tx)
-      toast.success('Bounty created successfully!')
-      setShowSuccess(true)
+      // Get latest blockhash
+      const { blockhash } = await connection.getLatestBlockhash()
+      transaction.recentBlockhash = blockhash
+      transaction.feePayer = anchorWallet.publicKey
+
+      // Sign and send the transaction
+      const signedTx = await anchorWallet.signTransaction(transaction)
+      const signature = await connection.sendRawTransaction(signedTx.serialize())
+
+      // Wait for confirmation with 60 second timeout
+      console.log('Waiting for confirmation... Signature:', signature)
+      
+      let confirmed = false
+      let retries = 0
+      const maxRetries = 30
+      
+      while (!confirmed && retries < maxRetries) {
+        try {
+          const status = await connection.getSignatureStatus(signature)
+          if (status.value?.err) {
+            throw new Error('Transaction failed: ' + JSON.stringify(status.value.err))
+          }
+          if (status.value?.confirmationStatus === 'confirmed' || status.value?.confirmationStatus === 'finalized') {
+            confirmed = true
+            console.log('Transaction confirmed! TX:', signature)
+            toast.success('Bounty created successfully!')
+            setShowSuccess(true)
+          }
+        } catch (checkError) {
+          // Transaction may not be found yet, continue waiting
+        }
+        
+        if (!confirmed) {
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          retries++
+        }
+      }
+
+      if (!confirmed) {
+        // Check if transaction was sent anyway
+        const status = await connection.getSignatureStatus(signature).catch(() => null)
+        if (status?.value?.err) {
+          throw new Error('Transaction failed: ' + JSON.stringify(status.value.err))
+        }
+        // Transaction may have been sent but not confirmed in time
+        console.log('Transaction sent but not confirmed yet. Signature:', signature)
+        toast.success('Bounty created! (Transaction sent, awaiting confirmation)')
+        setShowSuccess(true)
+      }
     } catch (error: any) {
       console.error('Error creating bounty:', error)
       toast.error('Failed to create bounty: ' + (error.message || 'Unknown error'))
@@ -137,12 +276,6 @@ export default function CreateBountyPage() {
       setIsCreating(false)
     }
   }
-
-  const steps = [
-    { step: 1, label: 'Bounty Details', completed: currentStep > 1 },
-    { step: 2, label: 'Prize & Escrow', completed: currentStep > 2 },
-    { step: 3, label: 'Confirmation', completed: false },
-  ]
 
   if (!connected) {
     return (
@@ -228,53 +361,31 @@ export default function CreateBountyPage() {
               </p>
             </div>
 
-            {/* Progress Indicator */}
-            <div className="relative space-y-8 before:absolute before:bottom-2 before:left-[11px] before:top-2 before:w-[2px] before:bg-surface-container-high">
-              {steps.map((s) => (
-                <div key={s.step} className="relative flex items-start gap-4">
-                  <div
-                    className={`z-10 flex h-6 w-6 items-center justify-center rounded-full ${
-                      s.completed
-                        ? 'bg-secondary'
-                        : currentStep === s.step
-                          ? 'border-2 border-surface bg-primary'
-                          : 'bg-surface-container-high'
-                    }`}
-                  >
-                    {s.completed && (
-                      <span
-                        className="material-symbols-outlined text-xs font-bold text-surface-container-lowest"
-                        style={{ fontVariationSettings: "'FILL' 1" }}
-                      >
-                        check
-                      </span>
-                    )}
-                    {!s.completed && currentStep === s.step && (
-                      <div className="h-2 w-2 rounded-full bg-surface"></div>
-                    )}
-                  </div>
-                  <div className="flex flex-col">
-                    <span
-                      className={`text-sm font-bold uppercase tracking-widest ${
-                        currentStep === s.step
-                          ? 'text-secondary'
-                          : 'text-on-surface-variant'
-                      }`}
-                    >
-                      Step {s.step}
-                    </span>
-                    <span
-                      className={`font-headline text-lg ${
-                        currentStep === s.step
-                          ? 'text-on-surface'
-                          : 'text-on-surface-variant'
-                      }`}
-                    >
-                      {s.label}
-                    </span>
-                  </div>
+            {/* How it works */}
+            <div className="space-y-4">
+              <h3 className="font-headline font-bold text-on-surface">How it works</h3>
+              <div className="space-y-3 text-sm text-on-surface-variant">
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">video_library</span>
+                  <span>Enter a YouTube video link</span>
                 </div>
-              ))}
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">sell</span>
+                  <span>Set your prize pool in SOL</span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">event</span>
+                  <span>Choose a deadline for submissions</span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">groups</span>
+                  <span>Editors submit clips and compete</span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">emoji_events</span>
+                  <span>Winner receives the prize automatically</span>
+                </div>
+              </div>
             </div>
 
             {/* AI Oracle Summary */}
@@ -460,34 +571,21 @@ export default function CreateBountyPage() {
               </div>
 
               {/* Action Bar */}
-              <div className="flex flex-col items-center justify-between gap-6 border-t border-outline-variant/10 pt-8 md:flex-row">
-                <button className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-on-surface-variant transition-colors hover:text-on-surface">
-                  <span className="material-symbols-outlined text-lg">
-                    arrow_back
-                  </span>
-                  Cancel
+              <div className="flex justify-end border-t border-outline-variant/10 pt-8">
+                <button
+                  onClick={handleCreateBounty}
+                  disabled={isCreating}
+                  className="gradient-solana flex items-center justify-center gap-2 rounded-xl px-10 py-4 font-bold text-on-primary-fixed transition-all hover:shadow-[0_0_20px_rgba(52,254,160,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isCreating ? (
+                    <>
+                      <span className="material-symbols-outlined animate-spin">progress_activity</span>
+                      Creating Bounty...
+                    </>
+                  ) : (
+                    'Create Bounty'
+                  )}
                 </button>
-                <div className="flex w-full gap-4 md:w-auto">
-                  <button className="flex-1 rounded-xl border border-outline-variant px-10 py-4 font-bold text-on-surface transition-all hover:bg-surface-container-high md:flex-initial">
-                    Save Progress
-                  </button>
-                  <button
-                    onClick={handleCreateBounty}
-                    disabled={isCreating}
-                    className="gradient-solana flex flex-1 items-center justify-center gap-2 rounded-xl px-10 py-4 font-bold text-on-primary-fixed transition-all hover:shadow-[0_0_20px_rgba(52,254,160,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70 md:flex-initial"
-                  >
-                    {isCreating ? (
-                      <>
-                        <span className="material-symbols-outlined animate-spin">progress_activity</span>
-                        Creating Bounty...
-                      </>
-                    ) : currentStep < 3 ? (
-                      'Next: Prize Pool'
-                    ) : (
-                      'Create Bounty'
-                    )}
-                  </button>
-                </div>
               </div>
             </div>
           </section>

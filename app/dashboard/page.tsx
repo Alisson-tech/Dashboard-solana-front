@@ -23,7 +23,21 @@ export default function DashboardPage() {
   }
 
   if (role !== 'creator') {
-    return null
+    // Debug: show role info
+    console.log('Not a creator, role:', role)
+    return (
+      <MainLayout>
+        <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
+          <span className="material-symbols-outlined mb-4 text-6xl text-on-surface-variant">person_off</span>
+          <h2 className="mb-2 font-headline text-2xl font-bold">Access Restricted</h2>
+          <p className="text-on-surface-variant">
+            Your account is not set up as a creator. 
+            <br />
+            Current role: {role || 'none'}
+          </p>
+        </div>
+      </MainLayout>
+    )
   }
 
   return (

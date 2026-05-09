@@ -32,7 +32,7 @@ export default function EditorDashboardPage() {
         const participatingClosed: Entry[] = []
 
         for (const pool of openPools) {
-          const entriesFromChain = await getPoolEntries(connection, pool.prizeVault.toBase58())
+          const entriesFromChain = await getPoolEntries(connection, pool.pda_address.toString())
           const myEntries = entriesFromChain.filter(e => e.user.toBase58() === walletAddress)
 
           for (const entry of myEntries) {

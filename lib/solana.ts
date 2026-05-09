@@ -37,6 +37,7 @@ export interface StakeAccountData {
 }
 
 export interface VideoPoolData {
+  pda_address: PublicKey
   creator: PublicKey
   originalVideoId: string
   prizeVault: PublicKey
@@ -155,13 +156,13 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
     })
 
     console.log('%cTotal accounts from RPC:', 'color: blue; font-weight: bold;', accounts.length)
-    
+
     const pools: VideoPoolData[] = []
     const SYSTEM_PROGRAM = new PublicKey('11111111111111111111111111111111')
     
     // VideoPool discriminator from IDL: [133, 206, 71, 13, 121, 10, 79, 129]
     const VIDEO_POOL_DISCRIMINATOR = [133, 206, 71, 13, 121, 10, 79, 129]
-    
+
     let poolsFound = 0
     let skippedInvalidDiscriminator = 0
     let skippedSystemProgram = 0
@@ -174,15 +175,17 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
       UserProfile: [32, 37, 119, 205, 179, 180, 13, 194],
       StakeAccount: [80, 158, 67, 124, 50, 189, 192, 255],
       PrizeVault: [34, 226, 195, 160, 248, 75, 50, 7],
+      ParticipantEntry: [212, 156, 59, 227, 2, 97, 82, 90],
+      GlobalConfig: [149, 8, 156, 202, 160, 252, 176, 217],
     }
     
     const discriminatorCounts: Record<string, number> = {}
-    
+
     for (const acc of accounts) {
       try {
         let rawData: Uint8Array
         const accountData = acc.account.data as any
-        
+
         if (typeof accountData === 'string') {
           rawData = Uint8Array.from(atob(accountData), c => c.charCodeAt(0))
         } else if (accountData && accountData.data) {
@@ -193,7 +196,7 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
           console.log('%c[DEBUG] Unknown data format:', 'color: red', { type: typeof accountData, keys: Object.keys(accountData || {}) })
           continue
         }
-        
+
         if (rawData.length < 8) continue
         
         const discriminator = Array.from(rawData.slice(0, 8))
@@ -234,9 +237,9 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
           skippedInvalidDiscriminator++
           continue
         }
-        
+
         const data = rawData.slice(8)
-        
+
         // Read prizeVault - must not be System Program
         const prizeVault = new PublicKey(data.slice(100, 132))
         
@@ -248,7 +251,7 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
         // Read status
         const status = data[146]
         if (status === undefined) continue
-        
+
         const poolStatus = status as PoolStatusValue
         
         // Only process Open pools
@@ -276,7 +279,7 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
           skippedZeroPrize++
           continue
         }
-        
+
         const poolData: VideoPoolData = {
           creator: new PublicKey(data.slice(0, 32)),
           originalVideoId: originalVideoId || 'Unknown',
@@ -292,14 +295,14 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
           totalScore: Number(readBigUInt64LE(data, 151)),
           expiryTimestamp: expiryTimestamp,
         }
-        
+
         pools.push(poolData)
         poolsFound++
       } catch (e) {
         continue
       }
     }
-    
+
     console.log('%c=== getPools END ===', 'color: green; font-size: 16px; font-weight: bold;', {
       poolsFound: pools.length,
       discriminatorCounts,
@@ -308,10 +311,88 @@ export async function getPools(connection: Connection): Promise<VideoPoolData[]>
       skippedExpired,
       skippedZeroPrize
     })
-    
+
     return pools
   } catch (error) {
     console.error('Error fetching pools:', error)
+    return []
+  }
+}
+
+export async function getCreatorPools(connection: Connection, creator: PublicKey): Promise<VideoPoolData[]> {
+  try {
+    const accounts = await connection.getProgramAccounts(PROGRAM_PUBKEY, {
+      encoding: 'base64',
+    })
+
+    const pools: VideoPoolData[] = []
+    const VIDEO_POOL_DISCRIMINATOR = [133, 206, 71, 13, 121, 10, 79, 129]
+    const SYSTEM_PROGRAM = new PublicKey('11111111111111111111111111111111')
+
+    for (const acc of accounts) {
+      try {
+        let rawData: Uint8Array
+        const accountData = acc.account.data as any
+
+        if (typeof accountData === 'string') {
+          rawData = Uint8Array.from(atob(accountData), c => c.charCodeAt(0))
+        } else if (accountData && accountData.data) {
+          rawData = new Uint8Array(accountData.data)
+        } else if (accountData instanceof Uint8Array) {
+          rawData = accountData
+        } else {
+          continue
+        }
+
+        if (rawData.length < 180) continue
+
+        const discriminator = Array.from(rawData.slice(0, 8))
+        const isValidDiscriminator = VIDEO_POOL_DISCRIMINATOR.every((b, i) => b === discriminator[i])
+        if (!isValidDiscriminator) continue
+
+        const data = rawData.slice(8)
+
+        const poolCreator = new PublicKey(data.slice(0, 32))
+        if (!poolCreator.equals(creator)) continue
+
+        const prizeVault = new PublicKey(data.slice(100, 132))
+        if (prizeVault.equals(SYSTEM_PROGRAM)) continue
+
+        const status = data[146]
+        if (status === undefined) continue
+
+        const videoIdLen = readUInt32LE(data, 32)
+        const videoIdBytes = data.slice(36, 36 + Math.min(videoIdLen, 64))
+        const originalVideoId = decodeUTF8(videoIdBytes).replace(/\0/g, '').trim()
+
+        const prizeAmount = Number(readBigUInt64LE(data, 132))
+        const expiryTimestamp = readInt32LE(data, 159)
+
+        const poolData: VideoPoolData = {
+          creator: poolCreator,
+          originalVideoId: originalVideoId || 'Unknown',
+          prizeVault: prizeVault,
+          prizeAmount: prizeAmount,
+          scoringRules: {
+            viewsWeight: readUInt16LE(data, 140),
+            likesWeight: readUInt16LE(data, 142),
+            commentsWeight: readUInt16LE(data, 144),
+          },
+          status: status as PoolStatusValue,
+          participantCount: readUInt32LE(data, 147),
+          totalScore: Number(readBigUInt64LE(data, 151)),
+          expiryTimestamp: expiryTimestamp,
+        }
+
+        pools.push(poolData)
+      } catch {
+        continue
+      }
+    }
+
+    return pools
+  } catch (error) {
+    console.error('Error fetching creator pools:', error)
     return []
   }
 }
@@ -330,10 +411,10 @@ export async function getPoolEntries(connection: Connection, poolPda: string): P
           ? Uint8Array.from(atob(acc.account.data), c => c.charCodeAt(0))
           : acc.account.data as Uint8Array
         if (data.length < 200) continue
-        
+
         const entryPool = new PublicKey(data.slice(0, 32))
         if (!entryPool.equals(poolPDA)) continue
-        
+
         const entryData: ParticipantEntryData = {
           pool: entryPool,
           user: new PublicKey(data.slice(32, 64)),
@@ -357,13 +438,74 @@ export async function getPoolEntries(connection: Connection, poolPda: string): P
   }
 }
 
+export async function getCreatorEntries(connection: Connection, creator: PublicKey): Promise<ParticipantEntryData[]> {
+  try {
+    const accounts = await connection.getProgramAccounts(PROGRAM_PUBKEY, {
+      encoding: 'base64',
+    })
+
+    const entries: ParticipantEntryData[] = []
+    const PARTICIPANT_ENTRY_DISCRIMINATOR = [212, 156, 59, 227, 2, 97, 82, 90]
+
+    for (const acc of accounts) {
+      try {
+        let rawData: Uint8Array
+        const accountData = acc.account.data as any
+
+        if (typeof accountData === 'string') {
+          rawData = Uint8Array.from(atob(accountData), c => c.charCodeAt(0))
+        } else if (accountData && accountData.data) {
+          rawData = new Uint8Array(accountData.data)
+        } else if (accountData instanceof Uint8Array) {
+          rawData = accountData
+        } else {
+          continue
+        }
+
+        if (rawData.length < 8) continue
+
+        const discriminator = Array.from(rawData.slice(0, 8))
+        const isValidDiscriminator = PARTICIPANT_ENTRY_DISCRIMINATOR.every((b, i) => b === discriminator[i])
+        if (!isValidDiscriminator) continue
+
+        const data = rawData.slice(8)
+
+        const entryUser = new PublicKey(data.slice(32, 64))
+        if (!entryUser.equals(creator)) continue
+
+        const entryData: ParticipantEntryData = {
+          pool: new PublicKey(data.slice(0, 32)),
+          user: entryUser,
+          channelId: decodeUTF8(data.slice(64, 128)),
+          clipLink: decodeUTF8(data.slice(128, 384)),
+          views: Number(readBigUInt64LE(data, 384)),
+          likes: Number(readBigUInt64LE(data, 392)),
+          comments: Number(readBigUInt64LE(data, 400)),
+          score: Number(readBigUInt64LE(data, 408)),
+          claimed: data[416] === 1,
+        }
+        entries.push(entryData)
+      } catch {
+        continue
+      }
+    }
+
+    return entries
+  } catch (error) {
+    console.error('Error fetching creator entries:', error)
+    return []
+  }
+}
+
 export async function getUserProfile(connection: Connection, authority: PublicKey): Promise<UserProfileData | null> {
   try {
+    console.log('[getUserProfile] looking up for:', authority.toBase58(), 'PROGRAM:', PROGRAM_PUBKEY.toBase58())
     const userProfilePDA = getUserProfilePDA(authority)
+    console.log('[getUserProfile] expected PDA:', userProfilePDA.toBase58())
     const accountInfo = await connection.getAccountInfo(userProfilePDA)
-    
+
     if (!accountInfo || accountInfo.data.length === 0) return null
-    
+
     const data: Uint8Array = typeof accountInfo.data === 'string' 
       ? Uint8Array.from(atob(accountInfo.data), c => c.charCodeAt(0))
       : accountInfo.data as Uint8Array
@@ -377,6 +519,7 @@ export async function getUserProfile(connection: Connection, authority: PublicKe
     let roleSource = 'default'
     
     try {
+      console.log('[getUserProfile] checking CreatorStats for role...')
       const stats = await getCreatorStats(connection, authority)
       console.log('Creator stats for', authority.toBase58(), ':', stats)
       if (stats && stats.poolsCreated > 0) {
@@ -430,7 +573,7 @@ export async function getUserProfile(connection: Connection, authority: PublicKe
     const isBanned = (isBannedOffset < data.length && data[isBannedOffset] === 1)
     
     console.log('User profile parsed:', { role, channelIds: channelIds.length, isBanned, hasRoleField, dataLength: data.length })
-    
+
     return {
       authority,
       role,
@@ -447,9 +590,9 @@ export async function getStakeAccount(connection: Connection, authority: PublicK
   try {
     const stakeAccountPDA = getStakeAccountPDA(authority)
     const accountInfo = await connection.getAccountInfo(stakeAccountPDA)
-    
+
     if (!accountInfo || accountInfo.data.length === 0) return null
-    
+
     const data: Uint8Array = typeof accountInfo.data === 'string' 
       ? Uint8Array.from(atob(accountInfo.data), c => c.charCodeAt(0))
       : accountInfo.data as Uint8Array
@@ -467,8 +610,9 @@ export async function getStakeAccount(connection: Connection, authority: PublicK
 export async function getCreatorStats(connection: Connection, creator: PublicKey): Promise<{ poolsCreated: number } | null> {
   try {
     const statsPDA = getCreatorStatsPDA(creator)
+    console.log('[getCreatorStats] creator:', creator.toBase58(), 'statsPDA:', statsPDA.toBase58())
     const accountInfo = await connection.getAccountInfo(statsPDA)
-    
+
     if (!accountInfo || accountInfo.data.length === 0) return null
     
     const data: Uint8Array = typeof accountInfo.data === 'string' 
@@ -478,6 +622,38 @@ export async function getCreatorStats(connection: Connection, creator: PublicKey
       poolsCreated: readUInt32LE(data, 0),
     }
   } catch {
+    return null
+  }
+}
+
+export async function getGlobalConfig(connection: Connection): Promise<GlobalConfigData | null> {
+  try {
+    const configPDA = getGlobalConfigPDA()
+    const accountInfo = await connection.getAccountInfo(configPDA)
+
+    if (!accountInfo || accountInfo.data.length === 0) return null
+
+    const data: Uint8Array = typeof accountInfo.data === 'string'
+      ? Uint8Array.from(atob(accountInfo.data), c => c.charCodeAt(0))
+      : accountInfo.data as Uint8Array
+
+    return {
+      admin: new PublicKey(data.slice(0, 32)),
+      oracle: new PublicKey(data.slice(32, 64)),
+      treasury: new PublicKey(data.slice(64, 96)),
+      minStakeAmount: Number(readBigUInt64LE(data, 96)),
+      maxChannels: data[104] ?? 0,
+      creationFeeBronze: Number(readBigUInt64LE(data, 105)),
+      creationFeeSilver: Number(readBigUInt64LE(data, 113)),
+      creationFeeGold: Number(readBigUInt64LE(data, 121)),
+      creationFeePlatinum: Number(readBigUInt64LE(data, 129)),
+      payoutFee: Number(readBigUInt64LE(data, 137)),
+      silverThreshold: Number(readBigUInt64LE(data, 145)),
+      goldThreshold: Number(readBigUInt64LE(data, 153)),
+      platinumThreshold: Number(readBigUInt64LE(data, 161)),
+    }
+  } catch (error) {
+    console.error('Error fetching global config:', error)
     return null
   }
 }

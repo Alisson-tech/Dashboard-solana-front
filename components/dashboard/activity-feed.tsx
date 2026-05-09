@@ -1,38 +1,33 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { formatRelativeTime } from '@/lib/mock-data'
-import { coreApi, Entry } from '@/lib/api'
+import { useConnection } from '@solana/wallet-adapter-react'
+import { useWallet } from '@solana/wallet-adapter-react'
+import { getCreatorEntries, ParticipantEntryData } from '@/lib/solana'
 
-const getActivityIcon = (type: string) => {
-  switch (type) {
-    case 'submission':
-      return { icon: 'upload', color: 'bg-secondary' }
-    case 'claim':
-      return { icon: 'payments', color: 'bg-primary' }
-    default:
-      return { icon: 'info', color: 'bg-outline' }
+const getActivityIcon = (claimed: boolean) => {
+  if (claimed) {
+    return { icon: 'check_circle', color: 'bg-primary' }
   }
+  return { icon: 'upload', color: 'bg-secondary' }
 }
 
 export function ActivityFeed() {
-  const [entries, setEntries] = useState<Entry[]>([])
+  const { connection } = useConnection()
+  const { publicKey } = useWallet()
+  const [entries, setEntries] = useState<ParticipantEntryData[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
+    if (!connection || !publicKey) {
+      setIsLoading(false)
+      return
+    }
+
     const fetchRecentActivity = async () => {
       try {
-        const data = await coreApi.getEntries({ limit: 8 })
-        if (data.items.length > 0) {
-          setEntries(data.items)
-        } else {
-          // Fallback to mock activity
-          const mockEntries: Entry[] = [
-            { pda_address: '1', pool_pda: 'Challenge #1', user_wallet: '0x123...abc', score: 1250, clip_link: '', views: 1000, likes: 200, comments: 50, claimed: false, channel_id: '' },
-            { pda_address: '2', pool_pda: 'Challenge #2', user_wallet: '0x456...def', score: 850, clip_link: '', views: 500, likes: 100, comments: 20, claimed: false, channel_id: '' },
-          ]
-          setEntries(mockEntries)
-        }
+        const creatorEntries = await getCreatorEntries(connection, publicKey)
+        setEntries(creatorEntries.slice(0, 8))
       } catch (error) {
         console.error('Error fetching activity:', error)
       } finally {
@@ -41,7 +36,7 @@ export function ActivityFeed() {
     }
 
     fetchRecentActivity()
-  }, [])
+  }, [connection, publicKey])
 
   return (
     <div className="space-y-6">
@@ -63,14 +58,15 @@ export function ActivityFeed() {
           ))
         ) : entries.length === 0 ? (
           <div className="py-10 text-center text-on-surface-variant text-sm">
-            No recent activity.
+            No recent submissions to your challenges.
           </div>
         ) : (
           entries.map((entry) => {
-            const { icon, color } = getActivityIcon('submission')
+            const { icon, color } = getActivityIcon(entry.claimed)
+            const userWallet = entry.user.toString()
 
             return (
-              <div key={entry.pda_address} className="group flex gap-4">
+              <div key={entry.user.toString() + entry.pool.toString()} className="group flex gap-4">
                 <div className="relative">
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-outline-variant/10 bg-surface-container-highest">
                     <span className="material-symbols-outlined text-primary">
@@ -91,15 +87,15 @@ export function ActivityFeed() {
                 <div className="flex-1">
                   <p className="text-sm leading-snug text-on-surface">
                     <span className="font-bold text-primary">
-                      {entry.user_wallet.slice(0, 6)}...
+                      {userWallet.slice(0, 6)}...
                     </span>{' '}
                     submitted a video to challenge{' '}
                     <span className="text-on-surface-variant">
-                      #{entry.pool_pda.slice(0, 8)}
+                      #{entry.pool.toString().slice(0, 8)}
                     </span>
                   </p>
                   <p className="mt-1 text-xs text-on-surface-variant">
-                    Score: {entry.score.toLocaleString()}
+                    Score: {Number(entry.score).toLocaleString()} • {entry.claimed ? 'Prize claimed' : 'Pending'}
                   </p>
                 </div>
               </div>
@@ -107,9 +103,11 @@ export function ActivityFeed() {
           })
         )}
 
-        <button className="mt-4 w-full rounded-xl border border-outline-variant/20 py-3 text-sm font-bold text-on-surface-variant transition-colors hover:bg-surface-container-high">
-          Load More Activity
-        </button>
+        {entries.length > 0 && (
+          <button className="mt-4 w-full rounded-xl border border-outline-variant/20 py-3 text-sm font-bold text-on-surface-variant transition-colors hover:bg-surface-container-high">
+            Load More Activity
+          </button>
+        )}
       </div>
     </div>
   )

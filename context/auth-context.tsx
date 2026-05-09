@@ -52,13 +52,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       const userProfile = await getUserProfile(connection, publicKey)
-      console.log('UserProfile:', userProfile)
+      console.log('UserProfile found:', userProfile)
       
       if (userProfile && !userProfile.isBanned) {
         setRole(userProfile.role)
         setIsOnboarded(true)
-        console.log('Set role:', userProfile.role)
-      } else {
+        console.log('Set role:', userProfile.role, 'isOnboarded:', true)
+      } else if (!userProfile) {
+        console.log('No user profile found - not onboarded')
+        setIsOnboarded(false)
+        setRole(null)
+      } else if (userProfile.isBanned) {
+        console.log('User is banned')
         setIsOnboarded(false)
         setRole(null)
       }
