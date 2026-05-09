@@ -1,4 +1,5 @@
 import { Connection, PublicKey } from '@solana/web3.js'
+import { getProgram } from './anchor/program'
 
 const PROGRAM_ID = process.env.NEXT_PUBLIC_PROGRAM_ID || 'J45dp2TMQXx5v5RDygsF3im7URJqu7QQ996V1kqXeNxN'
 
@@ -153,365 +154,115 @@ export function getLinkHash(clipLink: string): Uint8Array {
   return sha256sync(clipLink)
 }
 
+
+function mapStatusObj(statusObj: any): number {
+  if (statusObj && typeof statusObj === 'object') {
+    if ('open' in statusObj || statusObj.Open || statusObj.open !== undefined) return 0;
+    if ('closed' in statusObj || statusObj.Closed || statusObj.closed !== undefined) return 1;
+    if ('distributed' in statusObj || statusObj.Distributed || statusObj.distributed !== undefined) return 2;
+  }
+  return typeof statusObj === 'number' ? statusObj : 0;
+}
+
 export async function getPools(connection: Connection, options?: { includeClosed?: boolean }): Promise<VideoPoolData[]> {
   try {
-    console.log('%c=== getPools START ===', 'color: green; font-size: 16px; font-weight: bold;')
-    const accounts = await connection.getProgramAccounts(PROGRAM_PUBKEY, {
-      encoding: 'base64',
-    })
+    const dummyWallet = { publicKey: PROGRAM_PUBKEY } as any;
+    const program = getProgram(connection, dummyWallet);
+    const poolsRaw = await program.account.videoPool.all();
 
-    console.log('%cTotal accounts from RPC:', 'color: blue; font-weight: bold;', accounts.length)
-
-    const pools: VideoPoolData[] = []
-    const SYSTEM_PROGRAM = new PublicKey('11111111111111111111111111111111')
+    const pools = poolsRaw.map(p => {
+       const raw = p.account;
+       return {
+         pda_address: p.publicKey,
+         creator: raw.creator,
+         originalVideoId: raw.originalVideoId || '',
+         prizeVault: raw.prizeVault,
+         prizeAmount: Number(raw.prizeAmount),
+         scoringRules: {
+           viewsWeight: raw.scoringRules.viewsWeight,
+           likesWeight: raw.scoringRules.likesWeight,
+           commentsWeight: raw.scoringRules.commentsWeight,
+         },
+         status: mapStatusObj(raw.status) as typeof PoolStatus[keyof typeof PoolStatus],
+         participantCount: raw.participantCount,
+         totalScore: Number(raw.totalScore),
+         expiryTimestamp: Number(raw.expiryTimestamp)
+       };
+    });
     
-    // VideoPool discriminator from IDL: [133, 206, 71, 13, 121, 10, 79, 129]
-    const VIDEO_POOL_DISCRIMINATOR = [133, 206, 71, 13, 121, 10, 79, 129]
-
-    let poolsFound = 0
-    let skippedInvalidDiscriminator = 0
-    let skippedSystemProgram = 0
-    let skippedExpired = 0
-    let skippedZeroPrize = 0
-    
-    // Known discriminators from IDL
-    const DISCRIMINATORS = {
-      VideoPool: [133, 206, 71, 13, 121, 10, 79, 129],
-      UserProfile: [32, 37, 119, 205, 179, 180, 13, 194],
-      StakeAccount: [80, 158, 67, 124, 50, 189, 192, 255],
-      PrizeVault: [34, 226, 195, 160, 248, 75, 50, 7],
-      ParticipantEntry: [212, 156, 59, 227, 2, 97, 82, 90],
-      GlobalConfig: [149, 8, 156, 202, 160, 252, 176, 217],
-    }
-    
-    const discriminatorCounts: Record<string, number> = {}
-
-    for (const acc of accounts) {
-      try {
-        // Handle Buffer or Uint8Array correctly
-        const accountData = acc.account.data as Uint8Array
-        const rawData: Uint8Array = Buffer && Buffer.isBuffer(accountData)
-          ? new Uint8Array(accountData)
-          : accountData instanceof Uint8Array
-            ? accountData
-            : accountData.data
-              ? new Uint8Array(accountData.data)
-              : typeof accountData === 'string'
-                ? Uint8Array.from(atob(accountData), c => c.charCodeAt(0))
-                : null
-
-        if (!rawData) {
-          continue
-        }
-
-        if (rawData.length < 8) continue
-        
-        const discriminator = Array.from(rawData.slice(0, 8))
-        const discHex = discriminator.map(b => b.toString(16).padStart(2, '0')).join(' ')
-        
-        discriminatorCounts[discHex] = (discriminatorCounts[discHex] || 0) + 1
-        
-        // Log first few accounts
-        if (Object.keys(discriminatorCounts).length <= 3) {
-          console.log('%c[DEBUG] Account:', 'color: blue', {
-            pubkey: acc.pubkey.toBase58().slice(0, 12),
-            dataLen: rawData.length,
-            disc: discHex,
-            expectedVideoPool: '85 ce 47 0d 79 0a 4f 81'
-          })
-        }
-        
-        // Check minimum length (VideoPool size is typically around ~122 bytes depending on string length)
-        if (rawData.length < 100) continue
-        
-        // Check each known discriminator
-        let matchedType = null
-        for (const [type, expected] of Object.entries(DISCRIMINATORS)) {
-          if (expected.every((b, i) => b === discriminator[i])) {
-            matchedType = type
-            break
-          }
-        }
-        
-        if (matchedType === 'VideoPool') {
-          console.log('%c[DEBUG] Found VideoPool!', 'color: green', { pubkey: acc.pubkey.toBase58().slice(0, 12), dataLen: rawData.length })
-        }
-        
-        // Verify discriminator (first 8 bytes)
-        const isValidDiscriminator = VIDEO_POOL_DISCRIMINATOR.every((b, i) => b === discriminator[i])
-        
-        if (!isValidDiscriminator) {
-          skippedInvalidDiscriminator++
-          continue
-        }
-
-        const data = rawData.slice(8)
-        
-        // Read video_id: first 4 bytes = length, then the string
-        const videoIdLen = readUInt32LE(data, 32)
-        const videoIdBytes = data.slice(36, 36 + videoIdLen)
-        const originalVideoId = decodeUTF8(videoIdBytes).replace(/\0/g, '').trim()
-        
-        const currentOffset = 36 + videoIdLen
-        
-        // Read prizeVault (32 bytes)
-        const prizeVault = new PublicKey(data.slice(currentOffset, currentOffset + 32))
-        
-        if (prizeVault.equals(SYSTEM_PROGRAM)) {
-          skippedSystemProgram++
-          continue
-        }
-        
-        // Read prizeAmount (8 bytes)
-        const prizeAmount = Number(readBigUInt64LE(data, currentOffset + 32))
-        if (prizeAmount === 0) {
-          skippedZeroPrize++
-          continue
-        }
-
-        // Read scoring_rules (6 bytes total: 2 bytes each for views, likes, comments)
-        const viewsWeight = readUInt16LE(data, currentOffset + 40)
-        const likesWeight = readUInt16LE(data, currentOffset + 42)
-        const commentsWeight = readUInt16LE(data, currentOffset + 44)
-
-        // Read status (1 byte)
-        const status = data[currentOffset + 46]
-        if (status === undefined) continue
-        const poolStatus = status as PoolStatusValue
-        
-        // Removed the hardcoded 'PoolStatus.Open' check so Closed pools can be fetched
-        
-        // Read participantCount (4 bytes)
-        const participantCount = readUInt32LE(data, currentOffset + 47)
-        
-        // Read totalScore (8 bytes)
-        const totalScore = Number(readBigUInt64LE(data, currentOffset + 51))
-        
-        // Read expiryTimestamp as i64 (8 bytes, little-endian signed)
-        const expiryRaw = readBigUInt64LE(data, currentOffset + 59)
-        // Convert unsigned BigInt to signed (i64 range)
-        const expiryTimestamp = expiryRaw > BigInt('9223372036854775807')
-          ? Number(expiryRaw - BigInt('18446744073709551616'))
-          : Number(expiryRaw)
-        const now = Math.floor(Date.now() / 1000)
-        const isExpired = expiryTimestamp > 0 && expiryTimestamp <= now
-        
-        const poolData: VideoPoolData = {
-          pda_address: acc.pubkey,
-          creator: new PublicKey(data.slice(0, 32)),
-          originalVideoId: originalVideoId || 'Unknown',
-          prizeVault: prizeVault,
-          prizeAmount: prizeAmount,
-          scoringRules: {
-            viewsWeight: viewsWeight,
-            likesWeight: likesWeight,
-            commentsWeight: commentsWeight,
-          },
-          status: poolStatus,
-          participantCount: participantCount,
-          totalScore: totalScore,
-          expiryTimestamp: expiryTimestamp,
-        }
-
-        pools.push(poolData)
-        poolsFound++
-      } catch (e) {
-        continue
-      }
-    }
-
-    console.log('%c=== getPools END ===', 'color: green; font-size: 16px; font-weight: bold;', {
-      poolsFound: pools.length,
-      discriminatorCounts,
-      skippedInvalidDiscriminator,
-      skippedSystemProgram,
-      skippedExpired,
-      skippedZeroPrize
-    })
-
-    return pools
+    return options?.includeClosed ? pools : pools.filter(p => p.status === 0);
   } catch (error) {
-    console.error('Error fetching pools:', error)
-    return []
+    console.error('Error fetching pools:', error);
+    return [];
   }
 }
 
 export async function getCreatorPools(connection: Connection, creator: PublicKey, options?: { includeClosed?: boolean }): Promise<VideoPoolData[]> {
   try {
-    const accounts = await connection.getProgramAccounts(PROGRAM_PUBKEY, {
-      encoding: 'base64',
-    })
-
-    const pools: VideoPoolData[] = []
-    const VIDEO_POOL_DISCRIMINATOR = [133, 206, 71, 13, 121, 10, 79, 129]
-    const SYSTEM_PROGRAM = new PublicKey('11111111111111111111111111111111')
-
-    for (const acc of accounts) {
-      try {
-        let rawData: Uint8Array
-        const accountData = acc.account.data as any
-
-        if (typeof accountData === 'string') {
-          rawData = Uint8Array.from(atob(accountData), c => c.charCodeAt(0))
-        } else if (accountData && accountData.data) {
-          rawData = new Uint8Array(accountData.data)
-        } else if (accountData instanceof Uint8Array) {
-          rawData = accountData
-        } else {
-          continue
-        }
-
-        if (rawData.length < 180) continue
-
-        const discriminator = Array.from(rawData.slice(0, 8))
-        const isValidDiscriminator = VIDEO_POOL_DISCRIMINATOR.every((b, i) => b === discriminator[i])
-        if (!isValidDiscriminator) continue
-
-        const data = rawData.slice(8)
-
-        const poolCreator = new PublicKey(data.slice(0, 32))
-        if (!poolCreator.equals(creator)) continue
-
-        const prizeVault = new PublicKey(data.slice(100, 132))
-        if (prizeVault.equals(SYSTEM_PROGRAM)) continue
-
-        const status = data[146]
-        if (!options?.includeClosed && status !== PoolStatus.Open) continue
-
-        const videoIdLen = readUInt32LE(data, 32)
-        const videoIdBytes = data.slice(36, 36 + Math.min(videoIdLen, 64))
-        const originalVideoId = decodeUTF8(videoIdBytes).replace(/\0/g, '').trim()
-
-        const prizeAmount = Number(readBigUInt64LE(data, 132))
-        const expiryTimestamp = readInt32LE(data, 159)
-
-        const poolData: VideoPoolData = {
-          pda_address: acc.pubkey,
-          creator: poolCreator,
-          originalVideoId: originalVideoId || 'Unknown',
-          prizeVault: prizeVault,
-          prizeAmount: prizeAmount,
-          scoringRules: {
-            viewsWeight: readUInt16LE(data, 140),
-            likesWeight: readUInt16LE(data, 142),
-            commentsWeight: readUInt16LE(data, 144),
-          },
-          status: status as PoolStatusValue,
-          participantCount: readUInt32LE(data, 147),
-          totalScore: Number(readBigUInt64LE(data, 151)),
-          expiryTimestamp: expiryTimestamp,
-        }
-
-        pools.push(poolData)
-      } catch {
-        continue
-      }
-    }
-
-    return pools
+    const allPools = await getPools(connection, options);
+    return allPools.filter(p => p.creator.equals(creator));
   } catch (error) {
-    console.error('Error fetching creator pools:', error)
-    return []
+    console.error('Error fetching creator pools:', error);
+    return [];
   }
 }
 
 export async function getPoolEntries(connection: Connection, poolPda: string): Promise<ParticipantEntryData[]> {
   try {
-    const poolPDA = new PublicKey(poolPda)
-    const accounts = await connection.getProgramAccounts(PROGRAM_PUBKEY, {
-      encoding: 'base64',
-    })
-
-    const entries: ParticipantEntryData[] = []
-    for (const acc of accounts) {
-      try {
-        const accountData = acc.account.data as Uint8Array
-        const data: Uint8Array = Buffer && Buffer.isBuffer(accountData)
-          ? new Uint8Array(accountData)
-          : accountData instanceof Uint8Array
-            ? accountData
-            : new Uint8Array(accountData.data)
-        
-        if (data.length < 200) continue
-
-        const entryPool = new PublicKey(data.slice(0, 32))
-        if (!entryPool.equals(poolPDA)) continue
-
-        const entryData: ParticipantEntryData = {
-          pool: entryPool,
-          user: new PublicKey(data.slice(32, 64)),
-          channelId: decodeUTF8(data.slice(64, 128)),
-          clipLink: decodeUTF8(data.slice(128, 384)),
-          views: Number(readBigUInt64LE(data, 384)),
-          likes: Number(readBigUInt64LE(data, 392)),
-          comments: Number(readBigUInt64LE(data, 400)),
-          score: Number(readBigUInt64LE(data, 408)),
-          claimed: data[416] === 1,
-        }
-        entries.push(entryData)
-      } catch {
-        continue
-      }
-    }
-    return entries
+    const dummyWallet = { publicKey: PROGRAM_PUBKEY } as any;
+    const program = getProgram(connection, dummyWallet);
+    const poolPubkey = new PublicKey(poolPda);
+    
+    // Memory compare won't work well due to bs58 encoding length issues with JS wrappers sometimes, 
+    // but .all() then .filter() works very well for <1000 items. Let's use filter!
+    const entriesRaw = await program.account.participantEntry.all();
+    
+    return entriesRaw.filter(e => e.account.pool.equals(poolPubkey)).map(e => {
+      const raw = e.account;
+      return {
+        pool: raw.pool,
+        user: raw.user,
+        channelId: raw.channelId || '',
+        clipLink: raw.clipLink || '',
+        views: Number(raw.views),
+        likes: Number(raw.likes),
+        comments: Number(raw.comments),
+        score: Number(raw.score),
+        claimed: raw.claimed,
+        pda_address: e.publicKey
+      };
+    });
   } catch (error) {
-    console.error('Error fetching entries:', error)
-    return []
+    console.error('Error fetching entries:', error);
+    return [];
   }
 }
 
 export async function getCreatorEntries(connection: Connection, creator: PublicKey): Promise<ParticipantEntryData[]> {
   try {
-    const accounts = await connection.getProgramAccounts(PROGRAM_PUBKEY, {
-      encoding: 'base64',
-    })
-
-    const entries: ParticipantEntryData[] = []
-    const PARTICIPANT_ENTRY_DISCRIMINATOR = [212, 156, 59, 227, 2, 97, 82, 90]
-
-    for (const acc of accounts) {
-      try {
-        const accountData = acc.account.data as Uint8Array
-        const rawData: Uint8Array = Buffer && Buffer.isBuffer(accountData)
-          ? new Uint8Array(accountData)
-          : accountData instanceof Uint8Array
-            ? accountData
-            : accountData.data
-              ? new Uint8Array(accountData.data)
-              : null
-
-        if (!rawData || rawData.length < 8) continue
-
-        const discriminator = Array.from(rawData.slice(0, 8))
-        const isValidDiscriminator = PARTICIPANT_ENTRY_DISCRIMINATOR.every((b, i) => b === discriminator[i])
-        if (!isValidDiscriminator) continue
-
-        const data = rawData.slice(8)
-
-        const entryUser = new PublicKey(data.slice(32, 64))
-        if (!entryUser.equals(creator)) continue
-
-        const entryData: ParticipantEntryData = {
-          pool: new PublicKey(data.slice(0, 32)),
-          user: entryUser,
-          channelId: decodeUTF8(data.slice(64, 128)),
-          clipLink: decodeUTF8(data.slice(128, 384)),
-          views: Number(readBigUInt64LE(data, 384)),
-          likes: Number(readBigUInt64LE(data, 392)),
-          comments: Number(readBigUInt64LE(data, 400)),
-          score: Number(readBigUInt64LE(data, 408)),
-          claimed: data[416] === 1,
-        }
-        entries.push(entryData)
-      } catch {
-        continue
-      }
-    }
-
-    return entries
+    const dummyWallet = { publicKey: PROGRAM_PUBKEY } as any;
+    const program = getProgram(connection, dummyWallet);
+    
+    const entriesRaw = await program.account.participantEntry.all();
+    
+    return entriesRaw.filter(e => e.account.user.equals(creator)).map(e => {
+      const raw = e.account;
+      return {
+        pool: raw.pool,
+        user: raw.user,
+        channelId: raw.channelId || '',
+        clipLink: raw.clipLink || '',
+        views: Number(raw.views),
+        likes: Number(raw.likes),
+        comments: Number(raw.comments),
+        score: Number(raw.score),
+        claimed: raw.claimed,
+        pda_address: e.publicKey
+      };
+    });
   } catch (error) {
-    console.error('Error fetching creator entries:', error)
-    return []
+    console.error('Error fetching creator entries:', error);
+    return [];
   }
 }
 

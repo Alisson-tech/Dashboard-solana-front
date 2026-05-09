@@ -28,13 +28,26 @@ export default function BountiesPage() {
       try {
         const poolsFromChain = await getPools(connection)
         
+        let metadataMap: Record<string, {name: string | null, hashtag: string | null}> = {}
+        try {
+          const pdas = poolsFromChain.map(p => p.pda_address.toBase58())
+          metadataMap = await coreApi.getBatchPoolMetadata(pdas)
+        } catch (e) {
+          console.error("Failed to fetch pool metadata", e)
+        }
+        
         const mappedPools: Pool[] = poolsFromChain.map(p => {
           // Clean up the original video ID - remove null chars and trim
           const cleanVideoId = p.originalVideoId.replace(/\0/g, '').trim()
+          const pdaStr = p.pda_address.toBase58()
+          const meta = metadataMap[pdaStr]
+          
           return {
-            pda_address: p.prizeVault.toBase58(),
+            pda_address: p.pda_address.toBase58(), // FIX: use pda_address instead of prizeVault which was a bug in standard mapping
             creator_wallet: p.creator.toBase58(),
             original_video_id: cleanVideoId || 'Unknown',
+            name: meta?.name || undefined,
+            hashtag: meta?.hashtag || undefined,
             prize_amount: p.prizeAmount,
             participant_count: p.participantCount,
             status: p.status === PoolStatus.Open ? 'OPEN' as const : p.status === PoolStatus.Distributed ? 'DISTRIBUTED' as const : 'CLOSED' as const,
@@ -235,8 +248,8 @@ export default function BountiesPage() {
 
                   <div className="p-6">
                     <div className="mb-4">
-                      <h3 className="mb-1 text-lg font-bold text-on-surface truncate">
-                        Challenge #{pool.original_video_id}
+                      <h3 className="mb-1 text-lg font-bold text-on-surface truncate" title={pool.name || `Bounty #${pool.pda_address.slice(0, 8)}`}>
+                        {pool.name || `Bounty #${pool.pda_address.slice(0, 8)}`}
                       </h3>
                       <span className="text-sm text-secondary">
                         by {pool.creator_wallet.slice(0, 4)}...{pool.creator_wallet.slice(-4)}

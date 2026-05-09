@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useConnection } from '@solana/wallet-adapter-react'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { getPools, getCreatorPools, VideoPoolData, PoolStatus } from '@/lib/solana'
+import { coreApi } from '@/lib/api'
 
 function formatTimeLeft(expiryTimestamp: number): string {
   const now = Math.floor(Date.now() / 1000)
@@ -24,6 +25,7 @@ export function ActiveBountiesTable() {
   const { connection } = useConnection()
   const { publicKey } = useWallet()
   const [allPools, setAllPools] = useState<VideoPoolData[]>([])
+  const [metadataMap, setMetadataMap] = useState<Record<string, {name: string | null, hashtag: string | null}>>({})
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
@@ -37,19 +39,24 @@ export function ActiveBountiesTable() {
 
     const fetchCreatorPools = async () => {
       try {
-        const allPools = await getPools(connection, { includeClosed: true })
-        console.log('Total pools found:', allPools.length)
+        const _pools = await getPools(connection, { includeClosed: true })
         
-        const creatorPools = allPools.filter(pool => {
-          const isCreator = pool.creator.equals(publicKey)
-          console.log('Pool creator:', pool.creator.toString(), 'Is match:', isCreator)
-          return isCreator
+        const creatorPools = _pools.filter(pool => {
+          return pool.creator.equals(publicKey)
         })
         
-        console.log('Creator pools:', creatorPools.length)
-        creatorPools.forEach(p => console.log('  -', p.originalVideoId, p.pda_address.toString()))
-        
         setAllPools(creatorPools)
+        
+        // Fetch metadata
+        if (creatorPools.length > 0) {
+          try {
+            const pdas = creatorPools.map(p => p.pda_address.toBase58())
+            const meta = await coreApi.getBatchPoolMetadata(pdas)
+            setMetadataMap(meta)
+          } catch (e) {
+            console.error('Failed to fetch off-chain metadata', e)
+          }
+        }
       } catch (error) {
         console.error('Error fetching creator pools:', error)
       } finally {
@@ -78,7 +85,7 @@ export function ActiveBountiesTable() {
             Videos Already Used
           </h3>
           <p className="mb-4 text-sm text-on-surface-variant">
-            These videos already have pools created. Use a different video to create a new challenge.
+            These videos already have pools created. Use a different video to create a new bounty.
           </p>
           <div className="flex flex-wrap gap-2">
             {usedVideoIds.map((videoId) => (
@@ -97,12 +104,12 @@ export function ActiveBountiesTable() {
         </div>
       )}
 
-      {/* Section: Active Challenges */}
+      {/* Section: Active Bountys */}
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 font-headline text-xl font-bold">
             <span className="h-6 w-2 rounded-full bg-secondary"></span>
-            Active Challenges ({activePools.length})
+            Active Bountys ({activePools.length})
           </h2>
         </div>
 
@@ -112,7 +119,7 @@ export function ActiveBountiesTable() {
               <thead>
                 <tr className="border-b border-outline-variant/10">
                   <th className="px-6 py-4 text-xs font-bold uppercase tracking-widest text-on-surface-variant">
-                    Challenge
+                    Bounty
                   </th>
                   <th className="px-6 py-4 text-xs font-bold uppercase tracking-widest text-on-surface-variant">
                     Prize Pool
@@ -136,7 +143,7 @@ export function ActiveBountiesTable() {
                 ) : activePools.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-6 py-10 text-center text-on-surface-variant">
-                      No active challenges found. Create your first challenge!
+                      No active bountys found. Create your first bounty!
                     </td>
                   </tr>
                 ) : (
@@ -153,12 +160,12 @@ export function ActiveBountiesTable() {
                         <td className="px-6 py-5">
                           <Link href={`/bounties/${pool.pda_address.toString()}`}>
                             <p className="mb-1 font-bold text-on-surface hover:text-secondary">
-                              Challenge #{pool.pda_address.toString().slice(0, 8)}
+                              {metadataMap[pool.pda_address.toString()]?.name || `Bounty #${pool.pda_address.toString().slice(0, 8)}`}
                             </p>
                             <span
                               className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-tighter bg-primary/10 text-primary`}
                             >
-                              {pool.originalVideoId}
+                              {metadataMap[pool.pda_address.toString()]?.hashtag || pool.originalVideoId}
                             </span>
                           </Link>
                         </td>

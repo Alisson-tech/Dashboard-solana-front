@@ -20,6 +20,8 @@ export interface Pool {
   pda_address: string
   creator_wallet: string
   original_video_id: string
+  name?: string
+  hashtag?: string
   prize_amount: number
   scoring_rules: {
     views_weight: number
@@ -81,7 +83,6 @@ export const coreApi = {
   },
 
   // Pools
-  // Pools
   getPools: async (params?: { status?: string; creator_wallet?: string; page?: number; limit?: number }) => {
     const { data } = await apiClient.get<PaginatedResponse<Pool>>('/pools', { params })
     return data
@@ -89,6 +90,24 @@ export const coreApi = {
 
   getPool: async (poolPda: string) => {
     const { data } = await apiClient.get<Pool>(`/pools/${poolPda}`)
+    return data
+  },
+
+  updatePoolMetadata: async (poolPda: string, name: string, hashtag?: string) => {
+    const { data } = await apiClient.post(`/pools/${poolPda}/metadata`, { name, hashtag })
+    return data
+  },
+
+  getPoolMetadata: async (poolPda: string) => {
+    const { data } = await apiClient.get<{name: string | null, hashtag: string | null}>(`/pools/${poolPda}/metadata`)
+    return data
+  },
+
+  getBatchPoolMetadata: async (pdas: string[]) => {
+    if (!pdas.length) return {};
+    const { data } = await apiClient.get<Record<string, {name: string | null, hashtag: string | null}>>(`/pools/batch-metadata`, {
+      params: { pdas: pdas.join(',') }
+    })
     return data
   },
 

@@ -9,6 +9,7 @@ import { getGlobalConfig } from '@/lib/solana'
 import * as anchor from '@coral-xyz/anchor'
 import { PublicKey } from '@solana/web3.js'
 import { toast } from 'sonner'
+import { coreApi } from '@/lib/api'
 
 interface FormData {
   name: string
@@ -338,6 +339,15 @@ export default function CreateBountyPage() {
       }
 
       console.log('Transaction sent, signature:', sig)
+      
+      try {
+        console.log('Saving metadata off-chain to core-api...')
+        await coreApi.updatePoolMetadata(poolPda.toBase58(), formData.name, formData.hashtag)
+        console.log('Metadata saved successfully!')
+      } catch (metaErr) {
+        console.error('Core API metadata write failed:', metaErr)
+      }
+      
       toast.success('Bounty created! Signature: ' + sig)
       setShowSuccess(true)
     } catch (error: any) {

@@ -114,12 +114,12 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
         // Fetch from blockchain
         const allPools = await getPools(connection)
         
-        // Find the specific pool by prizeVault address
-        const foundPool = allPools.find(p => p.prizeVault.toBase58() === poolPda)
+        // Find the specific pool by pda_address
+        const foundPool = allPools.find(p => p.pda_address.toBase58() === poolPda)
         
         if (foundPool) {
           setPool({
-            pda_address: foundPool.prizeVault.toBase58(),
+            pda_address: foundPool.pda_address.toBase58(),
             creator_wallet: foundPool.creator.toBase58(),
             original_video_id: foundPool.originalVideoId,
             prize_amount: foundPool.prizeAmount,
@@ -311,11 +311,11 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
                 chevron_right
               </span>
               <span className="text-secondary">
-                Challenge #{pool.pda_address.slice(0, 8)}
+                Bounty #{pool.pda_address.slice(0, 8)}
               </span>
             </nav>
             <h1 className="font-headline text-4xl font-bold tracking-tight text-on-surface md:text-6xl">
-              Viral Clip <span className="gradient-text">Challenge</span>
+              Viral Clip <span className="gradient-text">Bounty</span>
             </h1>
             <p className="mt-2 text-on-surface-variant">Original Video: {pool.original_video_id}</p>
           </div>
