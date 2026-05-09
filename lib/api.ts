@@ -105,9 +105,15 @@ export const coreApi = {
 
   getBatchPoolMetadata: async (pdas: string[]) => {
     if (!pdas.length) return {};
-    const { data } = await apiClient.get<Record<string, {name: string | null, hashtag: string | null}>>(`/pools/batch-metadata`, {
+    const { data } = await apiClient.get<Record<string, {name: string | null, hashtag: string | null, video_title: string | null}>>(`/pools/batch-metadata`, {
       params: { pdas: pdas.join(',') }
     })
+    return data
+  },
+
+  batchEnrichTitles: async (items: { pda: string; video_id: string }[]) => {
+    if (!items.length) return { updated: 0, skipped: 0 }
+    const { data } = await apiClient.post<{ updated: number; skipped: number }>('/pools/batch-enrich-titles', items)
     return data
   },
 

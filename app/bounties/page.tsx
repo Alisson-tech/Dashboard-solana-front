@@ -28,7 +28,7 @@ export default function BountiesPage() {
       try {
         const poolsFromChain = await getPools(connection)
         
-        let metadataMap: Record<string, {name: string | null, hashtag: string | null}> = {}
+        let metadataMap: Record<string, {name: string | null, hashtag: string | null, video_title: string | null}> = {}
         try {
           const pdas = poolsFromChain.map(p => p.pda_address.toBase58())
           metadataMap = await coreApi.getBatchPoolMetadata(pdas)
@@ -45,7 +45,7 @@ export default function BountiesPage() {
             pda_address: pdaStr,
             creator_wallet: p.creator.toBase58(),
             original_video_id: cleanVideoId || 'Unknown',
-            name: meta?.name || undefined,
+            name: meta?.name || meta?.video_title || undefined,
             hashtag: meta?.hashtag || undefined,
             prize_amount: p.prizeAmount,
             participant_count: p.participantCount,
@@ -55,24 +55,23 @@ export default function BountiesPage() {
             scoring_rules: { views_weight: p.scoringRules.viewsWeight, likes_weight: p.scoringRules.likesWeight, comments_weight: p.scoringRules.commentsWeight },
           }
         })
-
-        // For pools without a name, fetch YouTube video titles as fallback
-        const poolsWithoutName = mappedPools.filter(p => !p.name && p.original_video_id !== 'Unknown')
-        if (poolsWithoutName.length > 0) {
-          try {
-            const uniqueVideoIds = [...new Set(poolsWithoutName.map(p => p.original_video_id))]
-            const ytTitles = await coreApi.getYoutubeTitles(uniqueVideoIds)
-            mappedPools.forEach(p => {
-              if (!p.name && ytTitles[p.original_video_id]) {
-                p.name = ytTitles[p.original_video_id] ?? undefined
-              }
-            })
-          } catch (e) {
-            console.error('Failed to fetch YouTube titles', e)
-          }
-        }
-
         setPools(mappedPools)
+
+        // Enrich the DB in background for pools that don't have a video_title yet
+        const needsEnrich = poolsFromChain
+          .map(p => ({
+            pda: p.pda_address.toBase58(),
+            video_id: p.originalVideoId.replace(/\0/g, '').trim(),
+          }))
+          .filter(item => {
+            const meta = metadataMap[item.pda]
+            return item.video_id && item.video_id !== 'Unknown' && !meta?.video_title
+          })
+        if (needsEnrich.length > 0) {
+          coreApi.batchEnrichTitles(needsEnrich).catch(e =>
+            console.error('Background title enrichment failed', e)
+          )
+        }
       } catch (error) {
         console.error('Error fetching pools:', error)
         toast.error('Failed to load pools from blockchain')
@@ -94,7 +93,8 @@ export default function BountiesPage() {
   }).filter(pool => {
     if (!searchQuery.trim()) return true
     const q = searchQuery.toLowerCase()
-    return pool.original_video_id.toLowerCase().includes(q) || pool.pda_address.toLowerCase().includes(q)
+    const displayName = pool.name || ''
+    return displayName.toLowerCase().includes(q) || pool.hashtag?.toLowerCase().includes(q)
   }).filter(pool => {
     if (filterDate === 'all') return true
     
@@ -194,7 +194,7 @@ export default function BountiesPage() {
             </span>
             <input
               type="text"
-              placeholder="Search bounties by Video ID..."
+              placeholder="Search bounties by name..."
               value={searchQuery}
               onChange={(e) => {
                 setSearchQuery(e.target.value)

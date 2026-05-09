@@ -25,8 +25,8 @@ export function ActiveBountiesTable() {
   const { connection } = useConnection()
   const { publicKey } = useWallet()
   const [allPools, setAllPools] = useState<VideoPoolData[]>([])
-  const [metadataMap, setMetadataMap] = useState<Record<string, {name: string | null, hashtag: string | null}>>({})
-  const [ytTitleMap, setYtTitleMap] = useState<Record<string, string | null>>({})
+  const [metadataMap, setMetadataMap] = useState<Record<string, {name: string | null, hashtag: string | null, video_title: string | null}>>({})
+
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
@@ -48,19 +48,19 @@ export function ActiveBountiesTable() {
           const meta = await coreApi.getBatchPoolMetadata(pdas)
           setMetadataMap(meta)
 
-          // Fetch YouTube titles for pools that have no off-chain name
-          const poolsWithoutName = creatorPools.filter(p => {
-            const pdaStr = p.pda_address.toBase58()
-            return !meta[pdaStr]?.name
-          })
-          if (poolsWithoutName.length > 0) {
-            const uniqueVideoIds = [...new Set(
-              poolsWithoutName
-                .map(p => p.originalVideoId.replace(/\0/g, '').trim())
-                .filter(Boolean)
-            )]
-            const titles = await coreApi.getYoutubeTitles(uniqueVideoIds)
-            setYtTitleMap(titles)
+          // Enrich DB in background for pools that don't have a video_title yet
+          const needsEnrich = creatorPools
+            .map(p => ({
+              pda: p.pda_address.toBase58(),
+              video_id: p.originalVideoId.replace(/\0/g, '').trim(),
+            }))
+            .filter(item => {
+              return item.video_id && !meta[item.pda]?.video_title
+            })
+          if (needsEnrich.length > 0) {
+            coreApi.batchEnrichTitles(needsEnrich).catch(e =>
+              console.error('Background title enrichment failed', e)
+            )
           }
         } catch (e) {
           console.error('Failed to fetch metadata', e)
@@ -163,7 +163,7 @@ export function ActiveBountiesTable() {
                     const cleanVideoId = pool.originalVideoId.replace(/\0/g, '').trim()
                     const displayName =
                       metadataMap[pdaStr]?.name ||
-                      ytTitleMap[cleanVideoId] ||
+                      metadataMap[pdaStr]?.video_title ||
                       `Bounty #${pdaStr.slice(0, 8)}`
                     const displayHashtag =
                       metadataMap[pdaStr]?.hashtag ||
