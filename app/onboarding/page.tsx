@@ -6,7 +6,7 @@ import { useAuth } from '@/context/auth-context'
 
 export default function OnboardingPage() {
   const { publicKey, disconnect } = useWallet()
-  const { completeOnboarding, isLoading } = useAuth()
+  const { completeOnboarding, isLoading, setSelectedRole: setContextSelectedRole } = useAuth()
   const [selectedRole, setSelectedRole] = useState<'creator' | 'editor' | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -16,6 +16,18 @@ export default function OnboardingPage() {
     if (!selectedRole) return
     setIsSubmitting(true)
     try {
+      // For editors: don't create a profile here. Let the EditorOnboardingGate
+      // handle the full onboarding (register channels + deposit stake).
+      // Just set the selected role in context and redirect.
+      if (selectedRole === 'editor') {
+        setContextSelectedRole('editor')
+        // The EditorOnboardingGate will create the profile properly with channels
+        // Redirect to bounties where the gate will guide through full onboarding
+        window.location.href = '/bounties'
+        return
+      }
+
+      // For creators: create empty profile on-chain
       await completeOnboarding(selectedRole)
     } finally {
       setIsSubmitting(false)

@@ -8,16 +8,21 @@ import { PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js'
 import {
   getUserProfilePDA,
   getUserProfile,
+  getStakeAccount,
+  getGlobalConfig,
   PROGRAM_PUBKEY,
 } from '@/lib/solana'
+import { MIN_REQUIRED_CHANNELS } from '@/lib/editor-onboarding'
 
 export type UserRole = 'creator' | 'editor' | null
 
 interface AuthContextValue {
   role: UserRole
+  selectedRole: UserRole
   isOnboarded: boolean
   isLoading: boolean
   setRole: (role: UserRole) => void
+  setSelectedRole: (role: UserRole) => void
   completeOnboarding: (role: 'creator' | 'editor') => Promise<void>
   checkExistingUser: () => Promise<void>
   walletAddress: string | null
@@ -25,9 +30,11 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue>({
   role: null,
+  selectedRole: null,
   isOnboarded: false,
   isLoading: true,
   setRole: () => {},
+  setSelectedRole: () => {},
   completeOnboarding: async () => {},
   checkExistingUser: async () => {},
   walletAddress: null,
@@ -39,10 +46,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
   const [role, setRole] = useState<UserRole>(null)
+  const [selectedRole, setSelectedRoleState] = useState<UserRole>(null)
   const [isOnboarded, setIsOnboarded] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
 
   const walletAddress = publicKey?.toBase58() || null
+
+  // Persist selectedRole to localStorage so it survives page reloads
+  const setSelectedRole = useCallback((newRole: UserRole) => {
+    setSelectedRoleState(newRole)
+    if (newRole && walletAddress) {
+      try {
+        localStorage.setItem(`selectedRole_${walletAddress}`, newRole)
+      } catch (e) {
+        console.warn('Failed to save selectedRole to localStorage', e)
+      }
+    }
+  }, [walletAddress])
 
   const checkExistingUser = useCallback(async () => {
     if (!publicKey || !connection) {
@@ -53,19 +73,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const userProfile = await getUserProfile(connection, publicKey)
       console.log('UserProfile found:', userProfile)
-      
-      if (userProfile && !userProfile.isBanned) {
-        setRole(userProfile.role)
-        setIsOnboarded(true)
-        console.log('Set role:', userProfile.role, 'isOnboarded:', true)
-      } else if (!userProfile) {
+
+      if (!userProfile) {
         console.log('No user profile found - not onboarded')
         setIsOnboarded(false)
         setRole(null)
-      } else if (userProfile.isBanned) {
+        return
+      }
+
+      if (userProfile.isBanned) {
         console.log('User is banned')
         setIsOnboarded(false)
         setRole(null)
+        return
+      }
+
+      // At this point we have a non-banned profile. For creators we consider
+      // them onboarded once the profile exists. For editors we require
+      // at least one channel ID (MIN_REQUIRED_CHANNELS) and the minimum stake.
+      setRole(userProfile.role)
+
+      if (userProfile.role === 'creator') {
+        setIsOnboarded(true)
+        console.log('Creator profile exists -> onboarded')
+        return
+      }
+
+      // Editor: validate channels and stake
+      const stake = await getStakeAccount(connection, publicKey)
+      const globalCfg = await getGlobalConfig(connection)
+      const minStake = globalCfg?.minStakeAmount ?? 100_000_000
+      const hasEnoughChannels = Array.isArray(userProfile.channelIds) && userProfile.channelIds.length >= MIN_REQUIRED_CHANNELS
+      const stakeAmount = stake?.amount ?? 0
+
+      if (hasEnoughChannels && stakeAmount >= minStake) {
+        setIsOnboarded(true)
+        console.log('Editor meets channel+stake requirements -> onboarded')
+      } else {
+        setIsOnboarded(false)
+        console.log('Editor missing channels or stake -> not onboarded', { hasEnoughChannels, stakeAmount, minStake })
       }
     } catch (e) {
       console.error('Error checking user:', e)
@@ -135,6 +181,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [publicKey, signTransaction, connection, router])
 
   useEffect(() => {
+    // Load selectedRole from localStorage when wallet connects
+    if (walletAddress) {
+      try {
+        const savedRole = localStorage.getItem(`selectedRole_${walletAddress}`)
+        if (savedRole === 'creator' || savedRole === 'editor') {
+          setSelectedRoleState(savedRole)
+        }
+      } catch (e) {
+        console.warn('Failed to load selectedRole from localStorage', e)
+      }
+    }
+  }, [walletAddress])
+
+  useEffect(() => {
     if (walletAddress && connection) {
       checkExistingUser()
     } else {
@@ -192,7 +252,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [isLoading, walletAddress, isOnboarded, role, pathname, router])
 
   return (
-    <AuthContext.Provider value={{ role, isOnboarded, isLoading, setRole, completeOnboarding, checkExistingUser, walletAddress }}>
+    <AuthContext.Provider value={{ role, selectedRole, isOnboarded, isLoading, setRole, setSelectedRole, completeOnboarding, checkExistingUser, walletAddress }}>
       {children}
     </AuthContext.Provider>
   )

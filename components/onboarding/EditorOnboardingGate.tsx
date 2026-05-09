@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { toast } from 'sonner'
@@ -13,14 +14,20 @@ import {
   getGlobalConfigPDA,
 } from '@/lib/solana'
 import { checkEditorOnboarding, OnboardingStatus, MIN_REQUIRED_CHANNELS, MAX_UI_REGISTRABLE_CHANNELS } from '@/lib/editor-onboarding'
+import { useAuth } from '@/context/auth-context'
 
 interface EditorOnboardingGateProps {
   children: React.ReactNode
 }
 
 export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
+  const router = useRouter()
   const { connection } = useConnection()
   const { publicKey, connected, signTransaction, sendTransaction } = useWallet()
+  const { role, selectedRole } = useAuth()
+
+  // Use selectedRole if no profile yet (user just chose role), otherwise use on-chain role
+  const currentRole = role || selectedRole
 
   const [status, setStatus] = useState<OnboardingStatus>({
     hasProfile: false,
@@ -28,6 +35,7 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
     stakeAmount: 0,
     minStake: 100_000_000,
     channelIds: [],
+    hasEnoughChannels: false,
     isBanned: false,
     isLoading: true,
     error: null,
@@ -37,8 +45,14 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
   // Dynamic channel input fields for the wizard; start with one empty field
   const [channels, setChannels] = useState<string[]>([''])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [stakeError, setStakeError] = useState<string | null>(null)
+  const [hasRedirected, setHasRedirected] = useState(false)
 
   const refresh = useCallback(async () => {
+    // Throttle refresh calls to avoid spamming RPC endpoints (dev fast-refresh can trigger many calls)
+    const now = Date.now()
+    if ((refresh as any)._last && now - (refresh as any)._last < 1500) return
+    ;(refresh as any)._last = now
     if (!connected || !publicKey || !connection) {
       setStatus(s => ({ ...s, isLoading: false }))
       return
@@ -47,18 +61,63 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
     try {
       const result = await checkEditorOnboarding(connection, publicKey)
       setStatus({ ...result, isLoading: false, error: null })
-      // Auto-advance wizard to step 2 if profile done
-      if (result.hasProfile && !result.hasStake) setWizardStep(2)
-      // If profile exists and has channels, prefill channel inputs for UX (but we cannot update on-chain without program change)
+      // Auto-advance wizard to step 2 ONLY if profile AND channels are done (step 1 complete)
+      if (result.hasProfile && result.hasEnoughChannels && !result.hasStake) {
+        setWizardStep(2)
+      } else {
+        // Otherwise always go back to step 1 (either no profile or incomplete channels)
+        setWizardStep(1)
+      }
+      // If profile exists and has channels, prefill channel inputs for UX
       if (result.hasProfile && result.channelIds && result.channelIds.length > 0) {
         setChannels(result.channelIds.slice(0, MAX_UI_REGISTRABLE_CHANNELS))
       }
     } catch (e: any) {
-      setStatus(s => ({ ...s, isLoading: false, error: e?.message || 'Failed to check on-chain status' }))
+      // If RPC fails (rate limits, network), ensure the gate shows and avoid leaving UI in loading state.
+      const msg = e?.message || String(e)
+      // Suggest RPC change on 429
+      if (msg.includes('429') || /Too Many Requests/i.test(msg)) {
+        toast.error('RPC rate-limited (429). Try changing your RPC endpoint or wait a few seconds.')
+      } else {
+        toast.error('Falha ao checar status on-chain: ' + (msg || 'Unknown error'))
+      }
+      // Force conservative status so the onboarding wizard appears and blocks access until resolved
+      setStatus({
+        hasProfile: false,
+        hasStake: false,
+        stakeAmount: 0,
+        minStake: 100_000_000,
+        channelIds: [],
+        isBanned: false,
+        isLoading: false,
+        error: msg,
+      })
     }
   }, [connected, publicKey, connection])
 
   useEffect(() => { refresh() }, [refresh])
+
+  // Only editors need to complete onboarding. Others (creators, non-connected users) can browse freely.
+  // If currentRole is explicitly 'editor', require full onboarding. Otherwise allow.
+  const isUnlocked =
+    !connected ||
+    currentRole !== 'editor' ||
+    (status.hasProfile && status.hasStake && status.hasEnoughChannels && !status.isBanned)
+
+  // Redirect to editor dashboard only ONCE when onboarding is just completed
+  useEffect(() => {
+    // Only redirect if: not loading, unlocked, is editor, and haven't redirected yet
+    // AND status shows we just got profile+stake (onboarding was just completed)
+    if (!status.isLoading && isUnlocked && currentRole === 'editor' && !hasRedirected && status.hasProfile && status.hasStake) {
+      setHasRedirected(true)
+      // Small delay to ensure UI is ready
+      const timer = setTimeout(() => {
+        toast.success('Welcome to SolCuts! 🎉', { description: 'You now have full access.' })
+        router.push('/editor-dashboard')
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+  }, [status.isLoading, isUnlocked, currentRole, hasRedirected, status.hasProfile, status.hasStake, router])
 
   // Utility: fetch latest blockhash with retry/backoff to handle transient
   // RPC "Internal error" failures. Keeps logic local to avoid changing
@@ -94,11 +153,20 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
   const validateChannels = () => {
     const trimmed = channels.map(c => c.trim()).filter(Boolean)
     if (trimmed.length < MIN_REQUIRED_CHANNELS) {
-      toast.error(`Por favor insira pelo menos ${MIN_REQUIRED_CHANNELS} Channel ID.`)
+      toast.error(`Please enter at least ${MIN_REQUIRED_CHANNELS} Channel ID.`)
       return null
     }
     for (const ch of trimmed) {
-      if (ch.length > 64) { toast.error('Channel ID muito longo'); return null }
+      if (ch.length > 64) {
+        toast.error('Channel ID too long');
+        return null
+      }
+    }
+    // Check for duplicate channel IDs
+    const uniqueChannels = new Set(trimmed)
+    if (uniqueChannels.size !== trimmed.length) {
+      toast.error('Duplicate channel IDs detected. Each channel must be unique.')
+      return null
     }
     return trimmed
   }
@@ -106,6 +174,14 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
   // New handler to register initial profile with one or more channels
   const handleRegisterChannel = async () => {
     if (!publicKey || !connected) return
+
+    // If profile already exists, cannot update channels (program limitation)
+    if (status.hasProfile) {
+      toast.error('Seu perfil já existe. Canais devem ser registrados na criação inicial do perfil. Contate suporte para reatribuir seu perfil.')
+      setIsSubmitting(false)
+      return
+    }
+
     const channelArray = validateChannels()
     if (!channelArray) return
     setIsSubmitting(true)
@@ -126,8 +202,8 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
       }
 
       if (accountInfo) {
-        // Profile already exists — refresh status and inform the user.
-        toast.error('Um perfil já existe para esta carteira. Atualizando status...')
+        // Profile already exists — this shouldn't happen due to check above but keep as safety
+        toast.error('A profile already exists for this wallet.')
         await refresh()
         setIsSubmitting(false)
         if (!status.hasStake) setWizardStep(2)
@@ -144,37 +220,46 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
         ;({ blockhash, lastValidBlockHeight } = await getLatestBlockhashWithRetry())
       } catch (bhErr: any) {
         console.error('Failed to fetch latest blockhash', bhErr)
-        toast.error('Erro ao obter blockhash do RPC. Tente novamente em alguns segundos ou mude o endpoint RPC.')
+        toast.error('Failed to get blockhash from RPC. Try again in a few seconds or change your RPC endpoint.')
         setIsSubmitting(false)
         return
       }
 
-      const sig = await (program.methods as any)
-        .initializeUser(channelArray)
-        .accounts({
-          userProfile: getUserProfilePDA(publicKey),
-          config: configPda,
-          authority: publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc()
-
-      // Confirm with HTTP polling fallback (Devnet WS is unreliable)
+      // Send transaction with custom confirmation timeout (5 minutes instead of 30 seconds)
+      let sig: string
       try {
-        await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed')
-      } catch {
-        let landed = false
-        for (let i = 0; i < 6; i++) {
-          // eslint-disable-next-line no-await-in-loop
-          await new Promise(r => setTimeout(r, 2000))
-          // eslint-disable-next-line no-await-in-loop
-          const tx = await connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
-          if (tx) { landed = true; break }
+        sig = await (program.methods as any)
+          .initializeUser(channelArray)
+          .accounts({
+            userProfile: getUserProfilePDA(publicKey),
+            config: configPda,
+            authority: publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc({ skipPreflight: false })
+      } catch (e: any) {
+        // If the error is about confirmation timeout, continue to manual polling
+        if (!e?.message?.includes('confirmed') && !e?.message?.includes('Timeout')) {
+          throw e
         }
-        if (!landed) throw new Error('Transaction not confirmed after 12s')
+        // Extract signature if available
+        const sigMatch = e?.message?.match(/[1-9A-HJ-NP-Z]{86,88}/)
+        if (!sigMatch) throw e
+        sig = sigMatch[0]
       }
 
-      toast.success('Channel(s) registered! Tx: ' + sig.slice(0, 16) + '…')
+      // Poll for confirmation with 5 minute timeout
+      let landed = false
+      for (let i = 0; i < 150; i++) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise(r => setTimeout(r, 2000))
+        // eslint-disable-next-line no-await-in-loop
+        const tx = await connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+        if (tx) { landed = true; break }
+      }
+      if (!landed) throw new Error('Transaction not confirmed after 5 minutes. Check explorer or try again.')
+
+      toast.success('Channels registered! Moving to Step 2...', { description: 'Now deposit stake to complete onboarding.' })
       await refresh()
       setWizardStep(2)
     } catch (e: any) {
@@ -217,50 +302,74 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
         ;({ blockhash, lastValidBlockHeight } = await getLatestBlockhashWithRetry())
       } catch (bhErr: any) {
         console.error('Failed to fetch latest blockhash', bhErr)
-        toast.error('Erro ao obter blockhash do RPC. Tente novamente em alguns segundos ou mude o endpoint RPC.')
+        toast.error('Failed to get blockhash from RPC. Try again in a few seconds or change your RPC endpoint.')
         setIsSubmitting(false)
         return
       }
 
-      const sig = await (program.methods as any)
-        .depositStake(new anchor.BN(amount))
-        .accounts({
-          stakeAccount: getStakeAccountPDA(publicKey),
-          config: configPda,
-          authority: publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc()
-
-      // Confirm with HTTP polling fallback (Devnet WS is unreliable)
+      // Send transaction with custom confirmation timeout (5 minutes instead of 30 seconds)
+      let sig: string
       try {
-        await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed')
-      } catch {
-        let landed = false
-        for (let i = 0; i < 6; i++) {
-          await new Promise(r => setTimeout(r, 2000))
-          const tx = await connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
-          if (tx) { landed = true; break }
+        sig = await (program.methods as any)
+          .depositStake(new anchor.BN(amount))
+          .accounts({
+            stakeAccount: getStakeAccountPDA(publicKey),
+            config: configPda,
+            authority: publicKey,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc({ skipPreflight: false })
+      } catch (e: any) {
+        // If the error is about confirmation timeout, continue to manual polling
+        if (!e?.message?.includes('confirmed') && !e?.message?.includes('Timeout')) {
+          throw e
         }
-        if (!landed) throw new Error('Transaction not confirmed after 12s')
+        // Extract signature if available
+        const sigMatch = e?.message?.match(/[1-9A-HJ-NP-Z]{86,88}/)
+        if (!sigMatch) throw e
+        sig = sigMatch[0]
       }
 
-      toast.success('Stake deposited! Tx: ' + sig.slice(0, 16) + '…')
+      // Poll for confirmation with 5 minute timeout
+      let landed = false
+      for (let i = 0; i < 150; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        const tx = await connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+        if (tx) { landed = true; break }
+      }
+      if (!landed) throw new Error(`Transaction not confirmed after 5 minutes. Check explorer with signature: ${sig.slice(0, 20)}... or try again.`)
+
+      toast.success('Stake deposited! Onboarding complete!', { description: 'You now have full access to the Bounty Marketplace.' })
       await refresh()
     } catch (e: any) {
       console.error(e)
+      const errorMsg = e?.message || 'Unknown error'
+      setStakeError(errorMsg)
       // Provide more helpful hint when the RPC fails to return blockhash
-      if (e && e.message && e.message.includes('failed to get latest blockhash')) {
-        toast.error('RPC falhou ao obter o blockhash. Tente trocar de endpoint RPC ou aguarde alguns segundos e tente novamente.')
+      if (errorMsg.includes('failed to get latest blockhash')) {
+        toast.error('RPC failed to get blockhash. Try changing your RPC endpoint or wait a few seconds and retry.')
+      } else if (errorMsg.includes('not confirmed')) {
+        toast.error('⏱️ Transaction too slow. Wait a few minutes and click "Try Again".')
       } else {
-        toast.error('Failed to deposit stake: ' + (e?.message || 'Unknown error'))
+        toast.error('Failed to deposit stake: ' + errorMsg)
       }
     } finally {
       setIsSubmitting(false)
     }
   }
 
-  const isUnlocked = connected && status.hasProfile && status.hasStake && !status.isBanned
+  // Debug: log unlock decision
+  if (!status.isLoading) {
+    console.log('[EditorOnboardingGate]', {
+      connected,
+      currentRole,
+      hasProfile: status.hasProfile,
+      hasStake: status.hasStake,
+      hasEnoughChannels: status.hasEnoughChannels,
+      isBanned: status.isBanned,
+      isUnlocked,
+    })
+  }
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
@@ -268,26 +377,35 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
       {/* Blurred background content */}
       <div
         className={`transition-all duration-500 ${
-          !isUnlocked && connected ? 'pointer-events-none select-none blur-md brightness-50' : ''
+          !isUnlocked ? 'pointer-events-none select-none blur-md brightness-50' : ''
         }`}
         aria-hidden={!isUnlocked}
       >
         {children}
       </div>
 
-      {/* Overlay gate — only shown when connected but not onboarded */}
-      {connected && !status.isLoading && !isUnlocked && (
+      {/* Overlay gate — shown whenever user is not unlocked (connected or not) */}
+      {!status.isLoading && !isUnlocked && (
         <div className="absolute inset-0 z-50 flex items-start justify-center pt-32 px-4">
           <div className="w-full max-w-md rounded-3xl border border-outline-variant/20 bg-surface-container/95 backdrop-blur-xl shadow-2xl overflow-hidden">
             
             {/* Header */}
-            <div className="relative bg-gradient-to-br from-primary/20 via-secondary/10 to-transparent p-8 pb-6">
-              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/20 ring-1 ring-primary/30">
-                <span className="material-symbols-outlined text-3xl text-primary">lock</span>
-              </div>
+              <div className="relative bg-gradient-to-br from-primary/20 via-secondary/10 to-transparent p-8 pb-6">
+                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/20 ring-1 ring-primary/30">
+                  <span className="material-symbols-outlined text-3xl text-primary">lock</span>
+                </div>
               <h2 className="font-headline text-2xl font-bold text-on-surface">
                 {status.isBanned ? 'Account Suspended' : 'Complete Editor Setup'}
               </h2>
+              {/* If not connected, encourage wallet connection upfront */}
+              {!connected && (
+                <div className="mt-4 flex items-center gap-3">
+                  <p className="text-sm text-on-surface-variant">Connect your wallet to begin the on-chain setup.</p>
+                  <div>
+                    <WalletMultiButton />
+                  </div>
+                </div>
+              )}
               <p className="mt-2 text-sm text-on-surface-variant">
                 {status.isBanned
                   ? 'Your account has been banned. Contact support.'
@@ -301,14 +419,14 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
                     <div key={step} className="flex items-center gap-2">
                       <div
                         className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold transition-all ${
-                          (step === 1 && status.hasProfile) || (step === 2 && status.hasStake)
+                          (step === 1 && status.hasProfile && status.hasEnoughChannels) || (step === 2 && status.hasStake)
                             ? 'bg-primary text-on-primary'
                             : step === wizardStep
                             ? 'bg-primary/30 text-primary ring-2 ring-primary'
                             : 'bg-surface-container-high text-on-surface-variant'
                         }`}
                       >
-                        {(step === 1 && status.hasProfile) || (step === 2 && status.hasStake)
+                        {(step === 1 && status.hasProfile && status.hasEnoughChannels) || (step === 2 && status.hasStake)
                           ? <span className="material-symbols-outlined text-sm">check</span>
                           : step}
                       </div>
@@ -325,7 +443,7 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
               {/* Step Content */}
               {!status.isBanned && (
                 <div className="p-8 pt-6">
-                {wizardStep === 1 && !status.hasProfile && (
+                {wizardStep === 1 && (!status.hasProfile || !status.hasEnoughChannels) && (
                   <div className="space-y-4">
                     <div>
                       <label className="mb-2 block text-sm font-medium text-on-surface">YouTube Channel ID(s)</label>
@@ -341,7 +459,7 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
                               className="flex-1 bg-transparent text-sm text-on-surface outline-none placeholder:text-on-surface-variant/50"
                             />
                             {channels.length > 1 && (
-                              <button type="button" onClick={() => removeChannel(idx)} className="text-error px-2">Remover</button>
+                              <button type="button" onClick={() => removeChannel(idx)} className="text-error px-2">Remove</button>
                             )}
                           </div>
                         ))}
@@ -354,7 +472,7 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
                           disabled={channels.length >= MAX_UI_REGISTRABLE_CHANNELS}
                           className="rounded-xl border px-4 py-2 text-sm"
                         >
-                          Adicionar canal ({channels.length}/{MAX_UI_REGISTRABLE_CHANNELS})
+                          Add Channel ({channels.length}/{MAX_UI_REGISTRABLE_CHANNELS})
                         </button>
                         <button
                           onClick={handleRegisterChannel}
@@ -362,7 +480,7 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
                           className="rounded-xl bg-primary py-3 px-4 text-sm font-bold text-on-primary transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 flex items-center gap-2"
                         >
                           {isSubmitting ? (
-                            <><span className="animate-spin material-symbols-outlined text-sm">progress_activity</span> Registrando…</>
+                            <><span className="animate-spin material-symbols-outlined text-sm">progress_activity</span> Registering…</>
                           ) : (
                             <><span className="material-symbols-outlined text-sm">person_add</span> Register Channel On-Chain</>
                           )}
@@ -370,16 +488,20 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
                       </div>
 
                       <div className="mt-2 space-y-1.5 rounded-lg bg-surface-container px-3 py-2">
-                        <p className="text-xs font-medium text-on-surface">Como encontrar seu Channel ID:</p>
-                        <p className="text-xs text-on-surface-variant">1. Acesse <a href="https://www.youtube.com/account_advanced" target="_blank" rel="noopener noreferrer" className="text-primary underline">youtube.com/account_advanced</a></p>
-                        <p className="text-xs text-on-surface-variant">2. Copie o <strong>ID do canal</strong> — começa com <code className="rounded bg-surface-container-high px-1 text-secondary">UC</code></p>
-                        <p className="text-[10px] text-error/80 mt-1">⚠️ O handle <code className="rounded bg-surface-container-high px-1">@SeuCanal</code> NÃO funciona. O Oracle valida pelo Channel ID interno.</p>
+                        <p className="text-xs font-medium text-on-surface">⚠️ Important: Channel IDs Are Immutable</p>
+                        <p className="text-[10px] text-on-surface-variant">Channel IDs registered here <strong>cannot be changed or updated</strong> after profile creation. Verify carefully before confirming.</p>
+                      </div>
+                      <div className="mt-2 space-y-1.5 rounded-lg bg-surface-container px-3 py-2">
+                        <p className="text-xs font-medium text-on-surface">How to Find Your Channel ID:</p>
+                        <p className="text-xs text-on-surface-variant">1. Visit <a href="https://www.youtube.com/account_advanced" target="_blank" rel="noopener noreferrer" className="text-primary underline">youtube.com/account_advanced</a></p>
+                        <p className="text-xs text-on-surface-variant">2. Copy the <strong>Channel ID</strong> — it starts with <code className="rounded bg-surface-container-high px-1 text-secondary">UC</code></p>
+                        <p className="text-[10px] text-error/80 mt-1">⚠️ Your handle <code className="rounded bg-surface-container-high px-1">@YourChannel</code> does NOT work. The Oracle validates by internal Channel ID.</p>
                       </div>
                     </div>
                   </div>
                 )}
 
-                {(wizardStep === 2 || status.hasProfile) && !status.hasStake && (
+                {wizardStep === 2 && status.hasProfile && status.hasEnoughChannels && !status.hasStake && (
                   <div className="space-y-4">
                     <div className="rounded-xl border border-outline-variant/20 bg-surface-container-high p-4">
                       <div className="flex items-center justify-between">
@@ -400,24 +522,76 @@ export function EditorOnboardingGate({ children }: EditorOnboardingGateProps) {
                     <p className="text-xs text-on-surface-variant">
                       This stake is locked as a good-faith deposit and protects the platform against spam. You can request to unstake after 3 days cooldown.
                     </p>
-                    <button
-                      onClick={handleDepositStake}
-                      disabled={isSubmitting}
-                      className="w-full rounded-xl bg-secondary py-3 text-sm font-bold text-on-secondary transition-all hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50 flex items-center justify-center gap-2"
-                    >
-                      {isSubmitting ? (
-                        <><span className="animate-spin material-symbols-outlined text-sm">progress_activity</span> Depositing…</>
-                      ) : (
-                        <><span className="material-symbols-outlined text-sm">account_balance_wallet</span> Deposit {(status.minStake / 1e9).toFixed(2)} SOL Stake</>
+                    <div className="space-y-3">
+                      <button
+                        onClick={handleDepositStake}
+                        disabled={isSubmitting}
+                        className="w-full rounded-xl bg-secondary py-3 text-sm font-bold text-on-secondary transition-all hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50 flex items-center justify-center gap-2"
+                      >
+                        {isSubmitting ? (
+                          <><span className="animate-spin material-symbols-outlined text-sm">progress_activity</span> Depositing…</>
+                        ) : (
+                          <><span className="material-symbols-outlined text-sm">account_balance_wallet</span> Deposit {(status.minStake / 1e9).toFixed(2)} SOL Stake</>
+                        )}
+                      </button>
+
+                      {stakeError && (
+                        <div className="rounded-lg border border-error/20 bg-error/5 p-3">
+                          <p className="text-xs text-error mb-2">{stakeError}</p>
+                          <button
+                            onClick={() => {
+                              setStakeError(null)
+                              handleDepositStake()
+                            }}
+                            disabled={isSubmitting}
+                            className="w-full rounded-lg border border-error/30 py-2 text-xs font-medium text-error hover:bg-error/10 disabled:opacity-50"
+                          >
+                            Try Again
+                          </button>
+                        </div>
                       )}
-                    </button>
+                    </div>
                   </div>
                 )}
 
-                {status.hasProfile && status.hasStake && (
+                {status.hasProfile && status.hasStake && status.hasEnoughChannels && (
                   <div className="flex flex-col items-center gap-3 py-4 text-center">
                     <span className="material-symbols-outlined text-4xl text-primary">check_circle</span>
                     <p className="font-semibold text-on-surface">All set! Refreshing…</p>
+                  </div>
+                )}
+
+                {/* If profile+stake exist but channels are missing, inform user of program limitation */}
+                {status.hasProfile && status.hasStake && !status.hasEnoughChannels && (
+                  <div className="space-y-3 rounded-lg border border-error/20 bg-error/5 p-4">
+                    <div className="flex items-start gap-3">
+                      <span className="material-symbols-outlined text-2xl text-error">error</span>
+                      <div>
+                        <p className="font-medium text-on-surface">Your profile was created without YouTube Channel IDs.</p>
+                        <p className="text-sm text-on-surface-variant mt-1">
+                          Due to a technical limitation, channels <strong>must be registered during initial profile creation</strong> and cannot be updated later.
+                        </p>
+                        <p className="text-sm text-on-surface-variant mt-2">
+                          <strong>Solution:</strong> Contact support to reconfigure your profile or create a new one with the correct Channel IDs.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <a
+                        href="https://discord.gg/solcuts"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-xl bg-secondary py-2 px-3 text-sm font-bold text-on-secondary"
+                      >
+                        Contact Support
+                      </a>
+                      <button
+                        onClick={async () => { await refresh() }}
+                        className="rounded-xl border px-3 py-2 text-sm"
+                      >
+                        Refresh
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
