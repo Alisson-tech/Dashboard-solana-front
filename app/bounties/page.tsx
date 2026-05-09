@@ -231,11 +231,23 @@ export default function BountiesPage() {
                   className="group overflow-hidden rounded-2xl border border-outline-variant/10 bg-surface-container-low transition-all hover:border-primary/30 hover:shadow-xl"
                 >
                   <div className="relative h-32 overflow-hidden bg-gradient-to-br from-primary/20 to-secondary/20">
+                    {/* Fallback icon — hidden when thumbnail loads */}
                     <div className="absolute inset-0 flex items-center justify-center">
                       <span className="material-symbols-outlined text-6xl text-on-surface/20">
                         movie
                       </span>
                     </div>
+                    {pool.original_video_id && pool.original_video_id !== 'Unknown' && (
+                      <>
+                        <img
+                          src={`https://img.youtube.com/vi/${pool.original_video_id}/hqdefault.jpg`}
+                          alt={pool.name || 'Bounty thumbnail'}
+                          className="absolute inset-0 h-full w-full object-cover"
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                        />
+                        <div className="absolute inset-0 bg-black/30" />
+                      </>
+                    )}
                     <div className="absolute left-4 top-4">
                       <span
                         className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${getCategoryColor('other')}`}
