@@ -34,7 +34,7 @@ export function BountyHealth() {
 
     const fetchHealthMetrics = async () => {
       try {
-        const pools = await getCreatorPools(connection, publicKey)
+        const pools = await getCreatorPools(connection, publicKey, { includeClosed: true })
         
         if (pools.length > 0) {
           const totalPrizeLocked = pools

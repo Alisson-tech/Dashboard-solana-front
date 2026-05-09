@@ -37,7 +37,7 @@ export function ActiveBountiesTable() {
 
     const fetchCreatorPools = async () => {
       try {
-        const allPools = await getPools(connection)
+        const allPools = await getPools(connection, { includeClosed: true })
         console.log('Total pools found:', allPools.length)
         
         const creatorPools = allPools.filter(pool => {

@@ -37,7 +37,7 @@ export function StatsCards() {
 
     const fetchCreatorStats = async () => {
       try {
-        const pools = await getCreatorPools(connection, publicKey)
+        const pools = await getCreatorPools(connection, publicKey, { includeClosed: true })
         
         if (pools.length > 0) {
           const now = Math.floor(Date.now() / 1000)
