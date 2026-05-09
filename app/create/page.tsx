@@ -34,6 +34,8 @@ export default function CreateBountyPage() {
     prizePool: '5.00',
     deadline: '',
   })
+  const [fieldErrors, setFieldErrors] = useState<{ videoUrl?: string; deadline?: string }>({})
+  const [isCheckingVideo, setIsCheckingVideo] = useState(false)
 
   useEffect(() => {
     const fetchTreasury = async () => {
@@ -65,6 +67,56 @@ export default function CreateBountyPage() {
   ) => {
     const { name, value } = e.target
     setFormData((prev) => ({ ...prev, [name]: value }))
+    // Clear field error when user edits the field
+    if (name === 'videoUrl' || name === 'deadline') {
+      setFieldErrors((prev) => ({ ...prev, [name]: undefined }))
+    }
+  }
+
+  const handleDeadlineChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    setFormData((prev) => ({ ...prev, deadline: value }))
+    if (!value) {
+      setFieldErrors((prev) => ({ ...prev, deadline: undefined }))
+      return
+    }
+    const selected = new Date(value)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    if (selected <= today) {
+      setFieldErrors((prev) => ({ ...prev, deadline: 'The deadline must be a future date.' }))
+    } else {
+      setFieldErrors((prev) => ({ ...prev, deadline: undefined }))
+    }
+  }
+
+  const handleVideoUrlBlur = async () => {
+    const url = formData.videoUrl.trim()
+    if (!url || !connection) return
+
+    const videoId = url.split('v=')[1]?.split('&')[0]
+    if (!videoId) return
+
+    setIsCheckingVideo(true)
+    try {
+      const [poolPda] = await PublicKey.findProgramAddress(
+        [Buffer.from('pool'), Buffer.from(videoId)],
+        new PublicKey(PROGRAM_ID)
+      )
+      const existing = await connection.getAccountInfo(poolPda)
+      if (existing) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          videoUrl: 'A bounty for this video already exists. Please use a different video.',
+        }))
+      } else {
+        setFieldErrors((prev) => ({ ...prev, videoUrl: undefined }))
+      }
+    } catch {
+      // silently ignore RPC errors during pre-check
+    } finally {
+      setIsCheckingVideo(false)
+    }
   }
 
   const platformFee = parseFloat(formData.prizePool || '0') * 0.005
@@ -74,6 +126,11 @@ export default function CreateBountyPage() {
     // Validate all fields
     if (!formData.name || !formData.hashtag || !formData.prizePool || !formData.deadline) {
       toast.error('Please fill in all fields')
+      return
+    }
+
+    if (fieldErrors.videoUrl || fieldErrors.deadline) {
+      toast.error('Please fix the errors before submitting.')
       return
     }
 
@@ -579,17 +636,36 @@ export default function CreateBountyPage() {
                   <label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
                     Video URL (YouTube, Drive, or Loom)
                   </label>
-                  <input
-                    type="url"
-                    name="videoUrl"
-                    value={formData.videoUrl}
-                    onChange={handleInputChange}
-                    className="w-full border-0 border-b border-outline-variant bg-surface-container-low px-0 py-3 text-on-surface transition-all placeholder:text-outline-variant focus:border-primary focus:ring-0"
-                    placeholder="https://youtube.com/watch?v=..."
-                  />
-                  <p className="text-[10px] italic text-on-surface-variant">
-                    Editors will use this specific source to generate clips.
-                  </p>
+                  <div className="relative">
+                    <input
+                      type="url"
+                      name="videoUrl"
+                      value={formData.videoUrl}
+                      onChange={handleInputChange}
+                      onBlur={handleVideoUrlBlur}
+                      className={`w-full border-0 border-b bg-surface-container-low px-0 py-3 text-on-surface transition-all placeholder:text-outline-variant focus:ring-0 ${
+                        fieldErrors.videoUrl
+                          ? 'border-error focus:border-error'
+                          : 'border-outline-variant focus:border-primary'
+                      }`}
+                      placeholder="https://youtube.com/watch?v=..."
+                    />
+                    {isCheckingVideo && (
+                      <span className="absolute right-0 top-3 material-symbols-outlined animate-spin text-sm text-on-surface-variant">
+                        progress_activity
+                      </span>
+                    )}
+                  </div>
+                  {fieldErrors.videoUrl ? (
+                    <div className="flex items-center gap-1.5 text-xs text-error">
+                      <span className="material-symbols-outlined text-sm">error</span>
+                      {fieldErrors.videoUrl}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] italic text-on-surface-variant">
+                      Editors will use this specific source to generate clips.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -634,9 +710,20 @@ export default function CreateBountyPage() {
                       type="date"
                       name="deadline"
                       value={formData.deadline}
-                      onChange={handleInputChange}
-                      className="w-full border-0 border-b border-outline-variant bg-surface-container-low px-0 py-3 text-on-surface transition-all focus:border-primary focus:ring-0"
+                      onChange={handleDeadlineChange}
+                      min={new Date(Date.now() + 86400000).toISOString().split('T')[0]}
+                      className={`w-full border-0 border-b bg-surface-container-low px-0 py-3 text-on-surface transition-all focus:ring-0 ${
+                        fieldErrors.deadline
+                          ? 'border-error focus:border-error'
+                          : 'border-outline-variant focus:border-primary'
+                      }`}
                     />
+                    {fieldErrors.deadline && (
+                      <div className="flex items-center gap-1.5 text-xs text-error">
+                        <span className="material-symbols-outlined text-sm">event_busy</span>
+                        {fieldErrors.deadline}
+                      </div>
+                    )}
                   </div>
                 </div>
 
