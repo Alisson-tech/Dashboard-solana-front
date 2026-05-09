@@ -37,13 +37,12 @@ export default function BountiesPage() {
         }
         
         const mappedPools: Pool[] = poolsFromChain.map(p => {
-          // Clean up the original video ID - remove null chars and trim
           const cleanVideoId = p.originalVideoId.replace(/\0/g, '').trim()
           const pdaStr = p.pda_address.toBase58()
           const meta = metadataMap[pdaStr]
-          
+
           return {
-            pda_address: p.pda_address.toBase58(), // FIX: use pda_address instead of prizeVault which was a bug in standard mapping
+            pda_address: pdaStr,
             creator_wallet: p.creator.toBase58(),
             original_video_id: cleanVideoId || 'Unknown',
             name: meta?.name || undefined,
@@ -56,6 +55,23 @@ export default function BountiesPage() {
             scoring_rules: { views_weight: p.scoringRules.viewsWeight, likes_weight: p.scoringRules.likesWeight, comments_weight: p.scoringRules.commentsWeight },
           }
         })
+
+        // For pools without a name, fetch YouTube video titles as fallback
+        const poolsWithoutName = mappedPools.filter(p => !p.name && p.original_video_id !== 'Unknown')
+        if (poolsWithoutName.length > 0) {
+          try {
+            const uniqueVideoIds = [...new Set(poolsWithoutName.map(p => p.original_video_id))]
+            const ytTitles = await coreApi.getYoutubeTitles(uniqueVideoIds)
+            mappedPools.forEach(p => {
+              if (!p.name && ytTitles[p.original_video_id]) {
+                p.name = ytTitles[p.original_video_id] ?? undefined
+              }
+            })
+          } catch (e) {
+            console.error('Failed to fetch YouTube titles', e)
+          }
+        }
+
         setPools(mappedPools)
       } catch (error) {
         console.error('Error fetching pools:', error)

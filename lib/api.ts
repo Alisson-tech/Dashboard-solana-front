@@ -142,4 +142,12 @@ export const coreApi = {
     }>('/utils/hash-link', { url })
     return data
   },
+
+  getYoutubeTitles: async (videoIds: string[]): Promise<Record<string, string | null>> => {
+    if (!videoIds.length) return {}
+    const { data } = await apiClient.get<Record<string, string | null>>('/utils/youtube-titles', {
+      params: { video_ids: videoIds.join(',') },
+    })
+    return data
+  },
 }

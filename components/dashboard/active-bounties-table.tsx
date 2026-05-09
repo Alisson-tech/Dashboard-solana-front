@@ -26,36 +26,44 @@ export function ActiveBountiesTable() {
   const { publicKey } = useWallet()
   const [allPools, setAllPools] = useState<VideoPoolData[]>([])
   const [metadataMap, setMetadataMap] = useState<Record<string, {name: string | null, hashtag: string | null}>>({})
+  const [ytTitleMap, setYtTitleMap] = useState<Record<string, string | null>>({})
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
     if (!connection || !publicKey) {
-      console.log('No connection or publicKey:', { connection: !!connection, publicKey: !!publicKey })
       setIsLoading(false)
       return
     }
 
-    console.log('Fetching pools for wallet:', publicKey.toString())
-
     const fetchCreatorPools = async () => {
       try {
         const _pools = await getPools(connection, { includeClosed: true })
-        
-        const creatorPools = _pools.filter(pool => {
-          return pool.creator.equals(publicKey)
-        })
-        
+        const creatorPools = _pools.filter(pool => pool.creator.equals(publicKey))
         setAllPools(creatorPools)
-        
-        // Fetch metadata
-        if (creatorPools.length > 0) {
-          try {
-            const pdas = creatorPools.map(p => p.pda_address.toBase58())
-            const meta = await coreApi.getBatchPoolMetadata(pdas)
-            setMetadataMap(meta)
-          } catch (e) {
-            console.error('Failed to fetch off-chain metadata', e)
+
+        if (creatorPools.length === 0) return
+
+        const pdas = creatorPools.map(p => p.pda_address.toBase58())
+        try {
+          const meta = await coreApi.getBatchPoolMetadata(pdas)
+          setMetadataMap(meta)
+
+          // Fetch YouTube titles for pools that have no off-chain name
+          const poolsWithoutName = creatorPools.filter(p => {
+            const pdaStr = p.pda_address.toBase58()
+            return !meta[pdaStr]?.name
+          })
+          if (poolsWithoutName.length > 0) {
+            const uniqueVideoIds = [...new Set(
+              poolsWithoutName
+                .map(p => p.originalVideoId.replace(/\0/g, '').trim())
+                .filter(Boolean)
+            )]
+            const titles = await coreApi.getYoutubeTitles(uniqueVideoIds)
+            setYtTitleMap(titles)
           }
+        } catch (e) {
+          console.error('Failed to fetch metadata', e)
         }
       } catch (error) {
         console.error('Error fetching creator pools:', error)
@@ -151,22 +159,31 @@ export function ActiveBountiesTable() {
                     const timeLeft = formatTimeLeft(pool.expiryTimestamp)
                     const now = Math.floor(Date.now() / 1000)
                     const isEndingSoon = pool.expiryTimestamp > now && pool.expiryTimestamp - now < 3 * 24 * 60 * 60
+                    const pdaStr = pool.pda_address.toString()
+                    const cleanVideoId = pool.originalVideoId.replace(/\0/g, '').trim()
+                    const displayName =
+                      metadataMap[pdaStr]?.name ||
+                      ytTitleMap[cleanVideoId] ||
+                      `Bounty #${pdaStr.slice(0, 8)}`
+                    const displayHashtag =
+                      metadataMap[pdaStr]?.hashtag ||
+                      (cleanVideoId ? `#${cleanVideoId.slice(0, 8)}` : null)
 
                     return (
                       <tr
-                        key={pool.pda_address.toString()}
+                        key={pdaStr}
                         className="transition-colors hover:bg-surface-container-high/50"
                       >
                         <td className="px-6 py-5">
-                          <Link href={`/bounties/${pool.pda_address.toString()}`}>
+                          <Link href={`/bounties/${pdaStr}`}>
                             <p className="mb-1 font-bold text-on-surface hover:text-secondary">
-                              {metadataMap[pool.pda_address.toString()]?.name || `Bounty #${pool.pda_address.toString().slice(0, 8)}`}
+                              {displayName}
                             </p>
-                            <span
-                              className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-tighter bg-primary/10 text-primary`}
-                            >
-                              {metadataMap[pool.pda_address.toString()]?.hashtag || pool.originalVideoId}
-                            </span>
+                            {displayHashtag && (
+                              <span className="rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-tighter bg-primary/10 text-primary">
+                                {displayHashtag}
+                              </span>
+                            )}
                           </Link>
                         </td>
                         <td className="px-6 py-5">
@@ -192,7 +209,7 @@ export function ActiveBountiesTable() {
                           </span>
                         </td>
                         <td className="px-6 py-5 text-right">
-                          <Link href={`/bounties/${pool.pda_address.toString()}`} className="rounded-lg p-2 transition-colors hover:bg-surface-bright inline-block">
+                          <Link href={`/bounties/${pdaStr}`} className="rounded-lg p-2 transition-colors hover:bg-surface-bright inline-block">
                             <span className="material-symbols-outlined text-on-surface-variant">
                               chevron_right
                             </span>
