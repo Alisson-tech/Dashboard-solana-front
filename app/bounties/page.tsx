@@ -129,9 +129,9 @@ export default function BountiesPage() {
               }}
               className="bg-transparent text-sm text-on-surface outline-none"
             >
-              <option value="all">All Status</option>
-              <option value="open">Open</option>
-              <option value="closed">Closed</option>
+              <option value="all" className="bg-[#121212]">All Status</option>
+              <option value="open" className="bg-[#121212]">Open</option>
+              <option value="closed" className="bg-[#121212]">Closed</option>
             </select>
           </div>
 
@@ -147,10 +147,10 @@ export default function BountiesPage() {
               }}
               className="bg-transparent text-sm text-on-surface outline-none"
             >
-              <option value="all">All Dates</option>
-              <option value="24h">Expiring in 24h</option>
-              <option value="7d">Expiring in 7 Days</option>
-              <option value="later">Later</option>
+              <option value="all" className="bg-[#121212]">All Dates</option>
+              <option value="24h" className="bg-[#121212]">Expiring in 24h</option>
+              <option value="7d" className="bg-[#121212]">Expiring in 7 Days</option>
+              <option value="later" className="bg-[#121212]">Later</option>
             </select>
           </div>
 
@@ -166,9 +166,9 @@ export default function BountiesPage() {
               }}
               className="bg-transparent text-sm text-on-surface outline-none"
             >
-              <option value="newest">Featured / Popular</option>
-              <option value="prize">Highest Prize</option>
-              <option value="deadline">Ending Soon</option>
+              <option value="newest" className="bg-[#121212]">Featured / Popular</option>
+              <option value="prize" className="bg-[#121212]">Highest Prize</option>
+              <option value="deadline" className="bg-[#121212]">Ending Soon</option>
             </select>
           </div>
 
