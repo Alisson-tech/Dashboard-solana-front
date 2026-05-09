@@ -1,11 +1,13 @@
 'use client'
 
-import { useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { useWallet } from '@solana/wallet-adapter-react'
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
+import { useAuth } from '@/context/auth-context'
 import { MainLayout } from '@/components/layout/main-layout'
-import { DynamicWidget } from '@dynamic-labs/sdk-react-core'
 
 export default function ProfilePage() {
-  const { user, isAuthenticated, primaryWallet } = useDynamicContext()
+  const { publicKey } = useWallet()
+  const { role } = useAuth()
 
   return (
     <MainLayout>
@@ -22,12 +24,12 @@ export default function ProfilePage() {
                 <span className="material-symbols-outlined text-4xl text-primary">person</span>
               </div>
               <h2 className="font-headline text-xl font-bold text-on-surface">
-                {user?.email || 'Anonymous User'}
+                {publicKey ? `${publicKey.toString().slice(0, 6)}...` : 'Anonymous'}
               </h2>
-              <p className="text-sm text-on-surface-variant">Member since 2026</p>
+              <p className="text-sm text-on-surface-variant capitalize">{role || 'Unregistered'} · Member since 2026</p>
               
               <div className="mt-6">
-                <DynamicWidget />
+                <WalletMultiButton />
               </div>
             </div>
           </div>
@@ -37,18 +39,18 @@ export default function ProfilePage() {
               <h3 className="mb-6 font-headline text-2xl font-bold text-on-surface">Account Details</h3>
               <div className="space-y-4">
                 <div className="flex justify-between border-b border-outline-variant/10 pb-4">
-                  <span className="text-on-surface-variant">Email Address</span>
-                  <span className="font-medium text-on-surface">{user?.email || 'Not provided'}</span>
-                </div>
-                <div className="flex justify-between border-b border-outline-variant/10 pb-4">
-                  <span className="text-on-surface-variant">Primary Wallet</span>
+                  <span className="text-on-surface-variant">Wallet Address</span>
                   <span className="font-mono text-sm text-on-surface">
-                    {primaryWallet?.address ? `${primaryWallet.address.slice(0, 8)}...${primaryWallet.address.slice(-8)}` : 'None'}
+                    {publicKey ? `${publicKey.toString().slice(0, 8)}...${publicKey.toString().slice(-8)}` : 'Not connected'}
                   </span>
                 </div>
                 <div className="flex justify-between border-b border-outline-variant/10 pb-4">
-                  <span className="text-on-surface-variant">Auth Method</span>
-                  <span className="capitalize text-on-surface">{user?.verifiedCredentials?.[0]?.format || 'Standard'}</span>
+                  <span className="text-on-surface-variant">Role</span>
+                  <span className="font-medium text-on-surface capitalize">{role || 'Not set'}</span>
+                </div>
+                <div className="flex justify-between border-b border-outline-variant/10 pb-4">
+                  <span className="text-on-surface-variant">Network</span>
+                  <span className="rounded-full bg-secondary/10 px-2 py-0.5 text-[10px] font-bold text-secondary">Devnet</span>
                 </div>
               </div>
             </div>
@@ -58,11 +60,11 @@ export default function ProfilePage() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="rounded-2xl bg-surface-container-high p-4">
                   <p className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">Challenges Hosted</p>
-                  <p className="font-headline text-2xl font-bold text-on-surface">0</p>
+                  <p className="font-headline text-2xl font-bold text-on-surface">{role === 'creator' ? '...' : '0'}</p>
                 </div>
                 <div className="rounded-2xl bg-surface-container-high p-4">
                   <p className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">Clips Submitted</p>
-                  <p className="font-headline text-2xl font-bold text-on-surface">0</p>
+                  <p className="font-headline text-2xl font-bold text-on-surface">{role === 'editor' ? '...' : '0'}</p>
                 </div>
               </div>
             </div>

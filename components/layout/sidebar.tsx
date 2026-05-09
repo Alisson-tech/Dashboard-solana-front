@@ -2,22 +2,10 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { useWallet } from '@solana/wallet-adapter-react'
 import { PublicKey } from '@solana/web3.js'
+import { useAuth } from '@/context/auth-context'
 import { cn } from '@/lib/utils'
-import { useBurnerWallet } from '@/hooks/use-burner-wallet'
-
-const sidebarLinks = [
-  { href: '/dashboard', label: 'Overview', icon: 'dashboard' },
-  { href: '/bounties', label: 'Bounties', icon: 'payments' },
-  { href: '/analytics', label: 'Analytics', icon: 'leaderboard' },
-  { href: '/settings', label: 'Settings', icon: 'settings' },
-]
-
-const bottomLinks = [
-  { href: '/support', label: 'Support', icon: 'help' },
-  { href: '/docs', label: 'Docs', icon: 'description' },
-]
 
 interface SidebarProps {
   showHeader?: boolean
@@ -25,16 +13,28 @@ interface SidebarProps {
 
 export function Sidebar({ showHeader = true }: SidebarProps) {
   const pathname = usePathname()
-  const { isAuthenticated, primaryWallet, user } = useDynamicContext()
-  const { wallet: burner, balance: burnerBalance } = useBurnerWallet()
-  
-  const connected = isAuthenticated
-  const activeWallet = primaryWallet || burner
-  const publicKey = activeWallet?.address 
-    ? new PublicKey(activeWallet.address) 
-    : ('publicKey' in (activeWallet || {})) 
-      ? (activeWallet as any).publicKey 
-      : null
+  const { publicKey } = useWallet()
+  const { role } = useAuth()
+
+  const connected = !!publicKey
+
+  const sidebarLinks = role === 'editor'
+    ? [
+        { href: '/editor-dashboard', label: 'Dashboard', icon: 'dashboard' },
+        { href: '/bounties', label: 'Bounties', icon: 'payments' },
+        { href: '/settings', label: 'Settings', icon: 'settings' },
+      ]
+    : [
+        { href: '/dashboard', label: 'Overview', icon: 'dashboard' },
+        { href: '/bounties', label: 'Bounties', icon: 'payments' },
+        { href: '/analytics', label: 'Analytics', icon: 'leaderboard' },
+        { href: '/settings', label: 'Settings', icon: 'settings' },
+      ]
+
+  const bottomLinks = [
+    { href: '/support', label: 'Support', icon: 'help' },
+    { href: '/docs', label: 'Docs', icon: 'description' },
+  ]
 
   return (
     <aside className={`fixed left-0 top-0 hidden h-screen w-64 flex-col border-r border-on-surface-variant/10 bg-surface-container-low lg:flex ${showHeader ? 'pt-20' : 'pt-6'}`}>
@@ -53,13 +53,13 @@ export function Sidebar({ showHeader = true }: SidebarProps) {
           </div>
           <div className="flex-1 min-w-0">
             <p className="font-bold text-on-surface truncate group-hover:text-primary transition-colors">
-              {isAuthenticated ? (user?.email?.split('@')[0] || 'User') : 'SolCuts HQ'}
+              {publicKey ? `${publicKey.toString().slice(0, 6)}...` : 'Guest'}
             </p>
             <p className="text-xs text-on-surface-variant">
               {connected ? (
                 <span className="flex items-center gap-1">
-                  <span className={`h-1.5 w-1.5 rounded-full ${primaryWallet ? 'bg-secondary' : 'bg-primary animate-pulse'}`} />
-                  {primaryWallet ? 'Verified Host' : 'Abstracted Mode'}
+                  <span className="h-1.5 w-1.5 rounded-full bg-secondary" />
+                  {role ? ` ${role.charAt(0).toUpperCase() + role.slice(1)}` : 'Connected'}
                 </span>
               ) : (
                 'Not connected'
@@ -74,14 +74,14 @@ export function Sidebar({ showHeader = true }: SidebarProps) {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
-                  {primaryWallet ? 'Primary Wallet' : 'Session Wallet'}
+                  Wallet
                 </p>
                 <p className="font-mono text-xs text-on-surface">
                   {publicKey.toString().slice(0, 6)}...{publicKey.toString().slice(-4)}
                 </p>
               </div>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${primaryWallet ? 'bg-secondary/10 text-secondary' : 'bg-primary/10 text-primary'}`}>
-                {primaryWallet ? 'DEVNET' : 'DEMO'}
+              <span className="rounded-full bg-secondary/10 px-2 py-0.5 text-[10px] font-bold text-secondary">
+                DEVNET
               </span>
             </div>
           </div>
@@ -136,16 +136,18 @@ export function Sidebar({ showHeader = true }: SidebarProps) {
         })}
       </nav>
 
-      {/* Create Bounty CTA */}
-      <div className="mx-4 mb-4">
-        <Link
-          href="/create"
-          className="gradient-solana flex items-center justify-center gap-2 rounded-xl px-4 py-3 font-bold text-on-primary-fixed transition-all hover:shadow-[0_0_20px_rgba(52,254,160,0.3)] active:scale-95"
-        >
-          <span className="material-symbols-outlined text-sm">add</span>
-          Create Bounty
-        </Link>
-      </div>
+      {/* Create Bounty CTA - only for creators */}
+      {role === 'creator' && (
+        <div className="mx-4 mb-4">
+          <Link
+            href="/create"
+            className="gradient-solana flex items-center justify-center gap-2 rounded-xl px-4 py-3 font-bold text-on-primary-fixed transition-all hover:shadow-[0_0_20px_rgba(52,254,160,0.3)] active:scale-95"
+          >
+            <span className="material-symbols-outlined text-sm">add</span>
+            Create Bounty
+          </Link>
+        </div>
+      )}
 
       {/* Bottom Links */}
       <div className="space-y-1 border-t border-outline-variant/10 px-4 py-4">

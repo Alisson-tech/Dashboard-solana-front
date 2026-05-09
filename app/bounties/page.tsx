@@ -18,7 +18,6 @@ export default function BountiesPage() {
         if (data.items.length > 0) {
           setPools(data.items)
         } else {
-          // Fallback to mock data
           const { mockBounties } = await import('@/lib/mock-data')
           const mockPools: Pool[] = mockBounties.map(b => ({
             pda_address: b.id,
@@ -26,7 +25,7 @@ export default function BountiesPage() {
             original_video_id: b.hashtag,
             prize_amount: b.prizePool * 1e9,
             participant_count: b.totalClips,
-            status: 'OPEN',
+            status: 'OPEN' as const,
             expiry_timestamp: b.deadline.toISOString(),
             total_score: 0,
             scoring_rules: { views_weight: 50, likes_weight: 30, comments_weight: 20 }
@@ -54,8 +53,8 @@ export default function BountiesPage() {
             <span className="gradient-text">Marketplace</span>
           </h1>
           <p className="max-w-2xl text-on-surface-variant">
-            Explore bounties ativos, participe como clipper e ganhe SOL
-            baseado no seu engajamento.
+            Explore active bounties, join as an editor, and earn SOL
+            based on your engagement.
           </p>
         </div>
 
@@ -100,13 +99,12 @@ export default function BountiesPage() {
         {/* Bounty Grid */}
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {isLoading ? (
-            // Skeleton Loading
             Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="h-[400px] animate-pulse rounded-2xl bg-surface-container-low"></div>
             ))
           ) : pools.length === 0 ? (
             <div className="col-span-full py-20 text-center">
-              <p className="text-on-surface-variant text-lg">No active bounties found in the API.</p>
+              <p className="text-on-surface-variant text-lg">No active bounties found.</p>
             </div>
           ) : (
             pools.map((pool) => {
@@ -114,7 +112,7 @@ export default function BountiesPage() {
               const timeLeft = formatTimeLeft(deadline)
               const isEndingSoon =
                 deadline.getTime() - Date.now() < 3 * 24 * 60 * 60 * 1000
-              const prizePool = pool.prize_amount / 1e9 // lamports to SOL
+              const prizePool = pool.prize_amount / 1e9
 
               return (
                 <Link
@@ -122,7 +120,6 @@ export default function BountiesPage() {
                   href={`/bounties/${pool.pda_address}`}
                   className="group overflow-hidden rounded-2xl border border-outline-variant/10 bg-surface-container-low transition-all hover:border-primary/30 hover:shadow-xl"
                 >
-                  {/* Card Header */}
                   <div className="relative h-32 overflow-hidden bg-gradient-to-br from-primary/20 to-secondary/20">
                     <div className="absolute inset-0 flex items-center justify-center">
                       <span className="material-symbols-outlined text-6xl text-on-surface/20">
@@ -145,7 +142,6 @@ export default function BountiesPage() {
                     </div>
                   </div>
 
-                  {/* Card Body */}
                   <div className="p-6">
                     <div className="mb-4">
                       <h3 className="mb-1 text-lg font-bold text-on-surface truncate">
@@ -225,7 +221,7 @@ export default function BountiesPage() {
               942
             </div>
             <div className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
-              Active Clippers
+              Active Editors
             </div>
           </div>
           <div className="group rounded-3xl border border-outline-variant/10 bg-surface-container-low p-8 transition-colors hover:border-tertiary/30">

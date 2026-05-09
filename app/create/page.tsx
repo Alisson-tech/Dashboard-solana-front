@@ -1,11 +1,10 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useConnection } from '@solana/wallet-adapter-react'
-import { DynamicWidget, useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { useState } from 'react'
+import { useConnection, useWallet } from '@solana/wallet-adapter-react'
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { MainLayout } from '@/components/layout/main-layout'
 import { getProgram, PROGRAM_ID } from '@/lib/anchor/program'
-import { useBurnerWallet } from '@/hooks/use-burner-wallet'
 import * as anchor from '@coral-xyz/anchor'
 import { PublicKey } from '@solana/web3.js'
 import { toast } from 'sonner'
@@ -19,22 +18,9 @@ interface FormData {
 }
 
 export default function CreateBountyPage() {
-  const { isAuthenticated, primaryWallet, sdkHasLoaded, user } = useDynamicContext()
+  const { publicKey, wallet, connected } = useWallet()
   const { connection } = useConnection()
-  const { wallet: burner, generateWallet, isGenerating, balance: burnerBalance } = useBurnerWallet()
-  
-  const [isDemoMode, setIsDemoMode] = useState(false)
-  const wallet = primaryWallet || burner
-  const connected = !!wallet
-  const isLoadingWallet = !sdkHasLoaded
 
-  // TOTAL ABSTRACTION: Ensure a wallet ALWAYS exists
-  useEffect(() => {
-    if (sdkHasLoaded && !primaryWallet && !burner && !isGenerating) {
-      console.log('Fulfilling user request: Auto-generating session wallet...')
-      generateWallet()
-    }
-  }, [sdkHasLoaded, primaryWallet, burner, isGenerating, generateWallet])
   const [currentStep, setCurrentStep] = useState(1)
   const [isCreating, setIsCreating] = useState(false)
   const [showSuccess, setShowSuccess] = useState(false)
@@ -62,46 +48,34 @@ export default function CreateBountyPage() {
       return
     }
 
-    // Validate form
     if (!formData.name || !formData.hashtag || !formData.prizePool || !formData.deadline) {
       toast.error('Please fill in all fields')
       return
     }
 
-    if (!connected || !wallet) {
-      if (isDemoMode) {
-        setIsCreating(true)
-        setTimeout(() => {
-          setIsCreating(false)
-          setShowSuccess(true)
-          toast.success('Bounty created successfully (DEMO MODE)!')
-        }, 2000)
-        return
-      }
-      toast.error('Please connect your Solana wallet (or use a Burner in Debug) to finalize.')
+    if (!connected || !wallet || !publicKey) {
+      toast.error('Please connect your Solana wallet to finalize.')
       return
     }
 
     setIsCreating(true)
 
     try {
-      // Create a compatible wallet for Anchor
-      const anchorWallet = 'address' in wallet ? {
-        publicKey: new PublicKey(wallet.address),
+      const anchorWallet = {
+        publicKey,
         signTransaction: async (tx: any) => {
-          const signer = await (wallet as any).getSigner();
-          return signer.signTransaction(tx);
+          const signer = (wallet as any).signTransaction
+          return signer(tx)
         },
         signAllTransactions: async (txs: any[]) => {
-          const signer = await (wallet as any).getSigner();
-          return signer.signAllTransactions(txs);
+          const signer = (wallet as any).signAllTransactions
+          return signer(txs)
         },
-      } : wallet; // Burner wallet already matches the interface
+      }
 
       const program = getProgram(connection, anchorWallet)
-      
-      // Extract video ID from URL or use a hash of the name
-      const originalVideoId = formData.videoUrl.split('v=')[1]?.split('&')[0] || 
+
+      const originalVideoId = formData.videoUrl.split('v=')[1]?.split('&')[0] ||
                              Math.random().toString(36).substring(7)
 
       const [poolPda] = PublicKey.findProgramAddressSync(
@@ -124,15 +98,12 @@ export default function CreateBountyPage() {
         PROGRAM_ID
       )
 
-      // Get treasury from config (or just use a placeholder for now, 
-      // but the instruction expects a specific account)
       const configAccount = await program.account.globalConfig.fetch(configPda)
       const treasury = configAccount.treasury as PublicKey
 
       const prizeAmount = new anchor.BN(parseFloat(formData.prizePool) * 1e9)
       const expiryTimestamp = new anchor.BN(new Date(formData.deadline).getTime() / 1000)
 
-      // Default scoring rules: 50% views, 30% likes, 20% comments
       const scoringRules = {
         viewsWeight: 5000,
         likesWeight: 3000,
@@ -169,18 +140,6 @@ export default function CreateBountyPage() {
     { step: 3, label: 'Confirmation', completed: false },
   ]
 
-  console.log('CreateBountyPage State:', { isAuthenticated, sdkHasLoaded, isDemoMode, hasWallet: !!primaryWallet })
-
-  if (isLoadingWallet) {
-    return (
-      <MainLayout showSidebar={false}>
-        <div className="flex min-h-[60vh] items-center justify-center">
-          <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-        </div>
-      </MainLayout>
-    )
-  }
-
   if (!connected) {
     return (
       <MainLayout showSidebar={false}>
@@ -189,14 +148,12 @@ export default function CreateBountyPage() {
             account_balance_wallet
           </span>
           <h1 className="mb-4 font-headline text-3xl font-bold text-on-surface">
-            Initializing Wallet...
+            Connect Your Wallet
           </h1>
           <p className="mb-8 max-w-md text-on-surface-variant">
-            We are setting up a secure session wallet for you to create your bounty.
+            Connect your Solana wallet to create a new bounty.
           </p>
-          <div className="flex flex-col gap-4">
-            <DynamicWidget />
-          </div>
+          <WalletMultiButton />
         </div>
       </MainLayout>
     )
@@ -221,7 +178,7 @@ export default function CreateBountyPage() {
             Your bounty <span className="font-bold text-secondary">{formData.name || 'New Bounty'}</span> is now live.
           </p>
           <p className="mb-8 max-w-md text-sm text-on-surface-variant">
-            {totalEscrow.toFixed(3)} SOL has been locked in escrow. Clippers can now start submitting their clips!
+            {totalEscrow.toFixed(3)} SOL has been locked in escrow. Editors can now start submitting their clips!
           </p>
           <div className="flex gap-4">
             <a
@@ -256,23 +213,6 @@ export default function CreateBountyPage() {
         <div className="grid grid-cols-1 gap-12 lg:grid-cols-12">
           {/* Sidebar: Progress and Context */}
           <aside className="space-y-8 lg:col-span-4">
-            {/* Wallet Status Badge */}
-            {burner && !primaryWallet && (
-              <div className="rounded-2xl border border-secondary/20 bg-secondary/5 p-4 animate-in fade-in slide-in-from-top-4 duration-500">
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="material-symbols-outlined text-secondary">auto_awesome</span>
-                  <p className="text-xs font-bold uppercase tracking-widest text-secondary">Abstracted Account Active</p>
-                </div>
-                <p className="text-[10px] text-on-surface-variant font-mono break-all mb-2">
-                  {burner.publicKey.toString()}
-                </p>
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-on-surface-variant">Devnet Balance</span>
-                  <span className="text-xs font-bold text-secondary">{burnerBalance.toFixed(3)} SOL</span>
-                </div>
-              </div>
-            )}
-
             <div className="space-y-6">
               <h2 className="text-4xl font-bold tracking-tighter text-on-surface">
                 Launch a new <br />
@@ -433,7 +373,7 @@ export default function CreateBountyPage() {
                     placeholder="https://youtube.com/watch?v=..."
                   />
                   <p className="text-[10px] italic text-on-surface-variant">
-                    Creators will use this specific source to generate clips.
+                    Editors will use this specific source to generate clips.
                   </p>
                 </div>
               </div>
@@ -521,7 +461,7 @@ export default function CreateBountyPage() {
                   <span className="material-symbols-outlined text-lg">
                     arrow_back
                   </span>
-                  Cancel Draft
+                  Cancel
                 </button>
                 <div className="flex w-full gap-4 md:w-auto">
                   <button className="flex-1 rounded-xl border border-outline-variant px-10 py-4 font-bold text-on-surface transition-all hover:bg-surface-container-high md:flex-initial">

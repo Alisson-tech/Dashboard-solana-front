@@ -45,6 +45,12 @@ export interface Entry {
   claimed: boolean
 }
 
+export interface UserProfile {
+  walletAddress: string
+  role: 'creator' | 'editor'
+  created_at?: string
+}
+
 export interface AuditLog {
   id: string
   entry_pda: string
@@ -55,6 +61,26 @@ export interface AuditLog {
 }
 
 export const coreApi = {
+  // Users
+  getUser: async (walletAddress: string) => {
+    const { data } = await apiClient.get<UserProfile>(`/users/${walletAddress}`)
+    return data
+  },
+
+  createUser: async (params: { walletAddress: string; role: 'creator' | 'editor' }) => {
+    const { data } = await apiClient.post<UserProfile>('/users', {
+      wallet_address: params.walletAddress,
+      role: params.role,
+    })
+    return data
+  },
+
+  getUserParticipations: async (walletAddress: string) => {
+    const { data } = await apiClient.get<PaginatedResponse<Entry>>(`/users/${walletAddress}/participations`)
+    return data
+  },
+
+  // Pools
   // Pools
   getPools: async (params?: { status?: string; creator_wallet?: string; page?: number; limit?: number }) => {
     const { data } = await apiClient.get<PaginatedResponse<Pool>>('/pools', { params })

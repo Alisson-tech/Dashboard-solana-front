@@ -3,8 +3,9 @@
 import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { DynamicWidget, useDynamicContext } from '@dynamic-labs/sdk-react-core'
-import { PublicKey } from '@solana/web3.js'
+import { useWallet } from '@solana/wallet-adapter-react'
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
+import { useAuth } from '@/context/auth-context'
 import { cn } from '@/lib/utils'
 
 const navLinks = [
@@ -54,19 +55,19 @@ interface HeaderProps {
 
 export function Header({ hideNav = false }: HeaderProps) {
   const pathname = usePathname()
-  const { isAuthenticated, user, primaryWallet } = useDynamicContext()
-  
-  const connected = isAuthenticated
-  const publicKey = primaryWallet?.address ? new PublicKey(primaryWallet.address) : null
-  const [showNotifications, setShowNotifications] = useState(false)
-  const [showWalletMenu, setShowWalletMenu] = useState(false)
-  const [showMobileMenu, setShowMobileMenu] = useState(false)
+  const { publicKey } = useWallet()
+  const { role, isOnboarded } = useAuth()
+
+  const connected = !!publicKey
   const notifRef = useRef<HTMLDivElement>(null)
   const walletRef = useRef<HTMLDivElement>(null)
 
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [showWalletMenu, setShowWalletMenu] = useState(false)
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
+
   const unreadCount = notifications.filter((n) => !n.read).length
 
-  // Close dropdowns when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (notifRef.current && !notifRef.current.contains(event.target as Node)) {
@@ -82,29 +83,27 @@ export function Header({ hideNav = false }: HeaderProps) {
 
   const getNotificationIcon = (type: string) => {
     switch (type) {
-      case 'success':
-        return 'check_circle'
-      case 'warning':
-        return 'warning'
-      case 'info':
-        return 'info'
-      default:
-        return 'notifications'
+      case 'success': return 'check_circle'
+      case 'warning': return 'warning'
+      case 'info': return 'info'
+      default: return 'notifications'
     }
   }
 
   const getNotificationColor = (type: string) => {
     switch (type) {
-      case 'success':
-        return 'text-secondary'
-      case 'warning':
-        return 'text-warning'
-      case 'info':
-        return 'text-primary'
-      default:
-        return 'text-on-surface-variant'
+      case 'success': return 'text-secondary'
+      case 'warning': return 'text-warning'
+      case 'info': return 'text-primary'
+      default: return 'text-on-surface-variant'
     }
   }
+
+  const finalLinks = !isOnboarded
+    ? navLinks.filter(l => l.href === '/bounties')
+    : role === 'editor'
+      ? navLinks.filter(l => l.href === '/bounties')
+      : navLinks
 
   return (
     <nav className="fixed left-0 right-0 top-0 z-50 border-b border-on-surface-variant/15 bg-background/60 shadow-[0_40px_40px_-15px_rgba(153,69,255,0.08)] backdrop-blur-xl">
@@ -116,25 +115,27 @@ export function Header({ hideNav = false }: HeaderProps) {
           >
             SolCuts
           </Link>
-          <div className="hidden items-center gap-6 md:flex">
-            {navLinks.map((link) => {
-              const isActive = pathname === link.href
-              return (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  className={cn(
-                    'font-headline tracking-tight transition-colors',
-                    isActive
-                      ? 'border-b-2 border-secondary pb-1 text-secondary'
-                      : 'text-on-surface-variant hover:text-on-surface'
-                  )}
-                >
-                  {link.label}
-                </Link>
-              )
-            })}
-          </div>
+          {!hideNav && (
+            <div className="hidden items-center gap-6 md:flex">
+              {finalLinks.map((link) => {
+                const isActive = pathname === link.href
+                return (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    className={cn(
+                      'font-headline tracking-tight transition-colors',
+                      isActive
+                        ? 'border-b-2 border-secondary pb-1 text-secondary'
+                        : 'text-on-surface-variant hover:text-on-surface'
+                    )}
+                  >
+                    {link.label}
+                  </Link>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 md:gap-4">
@@ -166,9 +167,9 @@ export function Header({ hideNav = false }: HeaderProps) {
                   <div className="p-2">
                     <div className="flex items-center justify-between rounded-xl bg-surface-container-high p-3">
                       <div>
-                        <p className="text-xs text-on-surface-variant">Balance</p>
-                        <p className="font-headline text-lg font-bold text-on-surface">
-                          -- SOL
+                        <p className="text-xs text-on-surface-variant">Role</p>
+                        <p className="font-headline text-lg font-bold text-on-surface capitalize">
+                          {role || 'Unregistered'}
                         </p>
                       </div>
                       <span className="rounded-full bg-secondary/10 px-2 py-1 text-[10px] font-bold text-secondary">
@@ -177,6 +178,14 @@ export function Header({ hideNav = false }: HeaderProps) {
                     </div>
                   </div>
                   <div className="border-t border-outline-variant/10 p-2">
+                    <Link
+                      href={role === 'editor' ? '/editor-dashboard' : '/dashboard'}
+                      className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+                      onClick={() => setShowWalletMenu(false)}
+                    >
+                      <span className="material-symbols-outlined text-sm">dashboard</span>
+                      Dashboard
+                    </Link>
                     <Link
                       href="/settings?tab=wallet"
                       className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
@@ -274,7 +283,7 @@ export function Header({ hideNav = false }: HeaderProps) {
           </div>
 
           {/* Wallet Connect Button */}
-          <DynamicWidget />
+          <WalletMultiButton />
 
           {/* Mobile Menu Button */}
           <button
@@ -292,7 +301,7 @@ export function Header({ hideNav = false }: HeaderProps) {
       {showMobileMenu && (
         <div className="border-t border-outline-variant/10 bg-surface-container-low p-4 md:hidden">
           <div className="space-y-2">
-            {navLinks.map((link) => {
+            {finalLinks.map((link) => {
               const isActive = pathname === link.href
               return (
                 <Link
@@ -312,11 +321,11 @@ export function Header({ hideNav = false }: HeaderProps) {
             })}
             <hr className="border-outline-variant/10" />
             <Link
-              href="/analytics"
+              href={role === 'editor' ? '/editor-dashboard' : '/dashboard'}
               onClick={() => setShowMobileMenu(false)}
               className="block rounded-lg px-4 py-3 font-medium text-on-surface-variant hover:bg-surface-container-high"
             >
-              Analytics
+              Dashboard
             </Link>
             <Link
               href="/settings"

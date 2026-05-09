@@ -1,15 +1,15 @@
 'use client'
 
 import { useState } from 'react'
-import { useDynamicContext } from '@dynamic-labs/sdk-react-core'
-import { PublicKey } from '@solana/web3.js'
+import { useWallet } from '@solana/wallet-adapter-react'
+import { useAuth } from '@/context/auth-context'
 import { MainLayout } from '@/components/layout/main-layout'
 
 export default function SettingsPage() {
-  const { isAuthenticated, primaryWallet } = useDynamicContext()
-  
-  const connected = isAuthenticated
-  const publicKey = primaryWallet?.address ? new PublicKey(primaryWallet.address) : null
+  const { publicKey } = useWallet()
+  const { role } = useAuth()
+
+  const connected = !!publicKey
   const [activeTab, setActiveTab] = useState('profile')
   const [notifications, setNotifications] = useState({
     email: true,
@@ -65,62 +65,47 @@ export default function SettingsPage() {
                 <h2 className="font-headline text-xl font-semibold text-on-surface">
                   Profile Information
                 </h2>
-                
+
                 <div className="flex items-center gap-6">
                   <div className="relative">
                     <div className="h-20 w-20 overflow-hidden rounded-full border-2 border-primary/20">
-                      <img
-                        src="https://lh3.googleusercontent.com/aida-public/AB6AXuBeBxXGfjNrxWckRKGfaK6fqhizpFWzzuJETbzEcPFE41Zz12mz27uIXnd90ji1mtSwCeMJu7PdyOjo0_FSxEfMzsajRklIV0tSsAGHC92QaWlUpD-OW-yPqbwdpTbuF-FpaWHPZYN9_GxMRqeX5DoSqVYpSpC4p9yhpSxKtbHL_y5XTsQCH2Vc9jLSXgapd8gZV3SY6oupQS1bj8w8f3hKdRBniUr2iSTqobX8-EFp1yIgbYsrctWhaS6mQ1YexNow1j4P_a8MoFB7"
-                        alt="Profile"
-                        className="h-full w-full object-cover"
-                      />
+                      <div className="h-full w-full bg-primary/10 flex items-center justify-center">
+                        <span className="material-symbols-outlined text-3xl text-primary">person</span>
+                      </div>
                     </div>
-                    <button className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full bg-primary text-on-primary-fixed">
-                      <span className="material-symbols-outlined text-sm">edit</span>
-                    </button>
                   </div>
                   <div>
-                    <p className="font-bold text-on-surface">SolCuts HQ</p>
-                    <p className="text-sm text-on-surface-variant">Verified Host</p>
+                    <p className="font-bold text-on-surface">
+                      {publicKey ? `${publicKey.toString().slice(0, 6)}...` : 'Guest'}
+                    </p>
+                    <p className="text-sm text-on-surface-variant capitalize">{role || 'Unregistered'}</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                   <div className="space-y-2">
                     <label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
-                      Display Name
+                      Wallet Address
                     </label>
                     <input
                       type="text"
-                      defaultValue="SolCuts HQ"
-                      className="w-full rounded-xl border border-outline-variant/20 bg-surface-container-high px-4 py-3 text-on-surface focus:border-primary focus:outline-none"
+                      value={publicKey?.toString() || 'Not connected'}
+                      readOnly
+                      className="w-full rounded-xl border border-outline-variant/20 bg-surface-container-high px-4 py-3 text-on-surface font-mono text-sm focus:border-primary focus:outline-none"
                     />
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
-                      Email
+                      Role
                     </label>
                     <input
-                      type="email"
-                      defaultValue="host@solcuts.io"
-                      className="w-full rounded-xl border border-outline-variant/20 bg-surface-container-high px-4 py-3 text-on-surface focus:border-primary focus:outline-none"
-                    />
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
-                      Bio
-                    </label>
-                    <textarea
-                      rows={3}
-                      defaultValue="Creator of viral clip challenges on Solana. Let's build the attention economy together!"
-                      className="w-full rounded-xl border border-outline-variant/20 bg-surface-container-high px-4 py-3 text-on-surface focus:border-primary focus:outline-none"
+                      type="text"
+                      value={role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Not set'}
+                      readOnly
+                      className="w-full rounded-xl border border-outline-variant/20 bg-surface-container-high px-4 py-3 text-on-surface capitalize focus:border-primary focus:outline-none"
                     />
                   </div>
                 </div>
-
-                <button className="rounded-xl bg-primary px-6 py-3 font-bold text-on-primary-fixed transition-all hover:bg-primary/90">
-                  Save Changes
-                </button>
               </div>
             )}
 

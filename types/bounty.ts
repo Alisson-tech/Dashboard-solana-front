@@ -1,3 +1,5 @@
+export type UserRole = 'creator' | 'editor'
+
 export interface Bounty {
   id: string
   title: string
