@@ -24,9 +24,13 @@ export function LeaderboardTable({
       try {
         const data = await coreApi.getPoolEntries(poolPda)
         setEntries(data.items)
-      } catch (error) {
-        console.error('Error fetching entries:', error)
-        // Silence toast here to avoid multiple toasts on detail page
+      } catch (error: any) {
+        // 404 means the pool isn't indexed in core-api yet (blockchain indexer hasn't synced)
+        // This is normal for newly created pools — show empty state silently
+        const status = error?.response?.status
+        if (status !== 404) {
+          console.error('Error fetching entries:', error)
+        }
       } finally {
         setIsLoading(false)
       }

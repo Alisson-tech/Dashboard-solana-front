@@ -14,6 +14,7 @@ import { LeaderboardTable } from '@/components/bounty/leaderboard-table'
 import { coreApi, Pool } from '@/lib/api'
 import { getProgram, PROGRAM_ID } from '@/lib/anchor/program'
 import { getPools, PoolStatus } from '@/lib/solana'
+import { EditorOnboardingGate } from '@/components/onboarding/EditorOnboardingGate'
 import { PublicKey } from '@solana/web3.js'
 import * as anchor from '@coral-xyz/anchor'
 import { toast } from 'sonner'
@@ -299,6 +300,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
 
   return (
     <MainLayout showSidebar={false}>
+      <EditorOnboardingGate>
       <div className="mx-auto max-w-[1440px]">
         {/* Header & Countdown */}
         <div className="mb-12 flex flex-col justify-between gap-6 md:flex-row md:items-end">
@@ -512,6 +514,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
           </div>
         </div>
       </div>
+      </EditorOnboardingGate>
     </MainLayout>
   )
 }

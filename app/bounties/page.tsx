@@ -8,6 +8,7 @@ import { formatTimeLeft, getCategoryColor } from '@/lib/mock-data'
 import { coreApi, Pool } from '@/lib/api'
 import { toast } from 'sonner'
 import { getPools, PoolStatus } from '@/lib/solana'
+import { EditorOnboardingGate } from '@/components/onboarding/EditorOnboardingGate'
 
 export default function BountiesPage() {
   const [pools, setPools] = useState<Pool[]>([])
@@ -118,6 +119,7 @@ export default function BountiesPage() {
 
   return (
     <MainLayout showSidebar={true} showHeader={false}>
+      <EditorOnboardingGate>
       <div className="mx-auto max-w-[1440px]">
         {/* Header */}
         <div className="mb-12">
@@ -428,6 +430,7 @@ export default function BountiesPage() {
           </div>
         </div>
       </div>
+      </EditorOnboardingGate>
     </MainLayout>
   )
 }
