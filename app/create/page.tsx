@@ -1,14 +1,15 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useConnection } from '@solana/wallet-adapter-react'
-import { DynamicWidget, useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { useConnection, useWallet } from '@solana/wallet-adapter-react'
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
 import { MainLayout } from '@/components/layout/main-layout'
 import { getProgram, PROGRAM_ID } from '@/lib/anchor/program'
-import { useBurnerWallet } from '@/hooks/use-burner-wallet'
+import { getGlobalConfig } from '@/lib/solana'
 import * as anchor from '@coral-xyz/anchor'
 import { PublicKey } from '@solana/web3.js'
 import { toast } from 'sonner'
+import { coreApi } from '@/lib/api'
 
 interface FormData {
   name: string
@@ -19,25 +20,13 @@ interface FormData {
 }
 
 export default function CreateBountyPage() {
-  const { isAuthenticated, primaryWallet, sdkHasLoaded, user } = useDynamicContext()
+  const { publicKey, wallet, connected, signTransaction, signAllTransactions } = useWallet()
   const { connection } = useConnection()
-  const { wallet: burner, generateWallet, isGenerating, balance: burnerBalance } = useBurnerWallet()
-  
-  const [isDemoMode, setIsDemoMode] = useState(false)
-  const wallet = primaryWallet || burner
-  const connected = !!wallet
-  const isLoadingWallet = !sdkHasLoaded
 
-  // TOTAL ABSTRACTION: Ensure a wallet ALWAYS exists
-  useEffect(() => {
-    if (sdkHasLoaded && !primaryWallet && !burner && !isGenerating) {
-      console.log('Fulfilling user request: Auto-generating session wallet...')
-      generateWallet()
-    }
-  }, [sdkHasLoaded, primaryWallet, burner, isGenerating, generateWallet])
-  const [currentStep, setCurrentStep] = useState(1)
   const [isCreating, setIsCreating] = useState(false)
   const [showSuccess, setShowSuccess] = useState(false)
+  const [treasury, setTreasury] = useState<string>('')
+  const [isLoadingTreasury, setIsLoadingTreasury] = useState(true)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     hashtag: '',
@@ -45,140 +34,404 @@ export default function CreateBountyPage() {
     prizePool: '5.00',
     deadline: '',
   })
+  const [fieldErrors, setFieldErrors] = useState<{ videoUrl?: string; deadline?: string }>({})
+  const [isCheckingVideo, setIsCheckingVideo] = useState(false)
+
+  useEffect(() => {
+    const fetchTreasury = async () => {
+      if (!connection) {
+        setIsLoadingTreasury(false)
+        return
+      }
+      
+      try {
+        const config = await getGlobalConfig(connection)
+        if (config?.treasury) {
+          setTreasury(config.treasury.toString())
+          console.log('Treasury fetched:', config.treasury.toString())
+        } else {
+          console.warn('GlobalConfig not found or treasury not set')
+        }
+      } catch (error) {
+        console.error('Error fetching treasury:', error)
+      } finally {
+        setIsLoadingTreasury(false)
+      }
+    }
+
+    fetchTreasury()
+  }, [connection])
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
   ) => {
     const { name, value } = e.target
     setFormData((prev) => ({ ...prev, [name]: value }))
+    // Clear field error when user edits the field
+    if (name === 'videoUrl' || name === 'deadline') {
+      setFieldErrors((prev) => ({ ...prev, [name]: undefined }))
+    }
+  }
+
+  const handleDeadlineChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    setFormData((prev) => ({ ...prev, deadline: value }))
+    if (!value) {
+      setFieldErrors((prev) => ({ ...prev, deadline: undefined }))
+      return
+    }
+    const selected = new Date(value)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    if (selected <= today) {
+      setFieldErrors((prev) => ({ ...prev, deadline: 'The deadline must be a future date.' }))
+    } else {
+      setFieldErrors((prev) => ({ ...prev, deadline: undefined }))
+    }
+  }
+
+  const handleVideoUrlBlur = async () => {
+    const url = formData.videoUrl.trim()
+    if (!url || !connection) return
+
+    const videoId = url.split('v=')[1]?.split('&')[0]
+    if (!videoId) return
+
+    setIsCheckingVideo(true)
+    try {
+      const [poolPda] = await PublicKey.findProgramAddress(
+        [Buffer.from('pool'), Buffer.from(videoId)],
+        new PublicKey(PROGRAM_ID)
+      )
+      const existing = await connection.getAccountInfo(poolPda)
+      if (existing) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          videoUrl: 'A bounty for this video already exists. Please use a different video.',
+        }))
+      } else {
+        setFieldErrors((prev) => ({ ...prev, videoUrl: undefined }))
+      }
+    } catch {
+      // silently ignore RPC errors during pre-check
+    } finally {
+      setIsCheckingVideo(false)
+    }
   }
 
   const platformFee = parseFloat(formData.prizePool || '0') * 0.005
   const totalEscrow = parseFloat(formData.prizePool || '0') + platformFee
 
   const handleCreateBounty = async () => {
-    if (currentStep < 3) {
-      setCurrentStep((prev) => prev + 1)
-      return
-    }
-
-    // Validate form
+    // Validate all fields
     if (!formData.name || !formData.hashtag || !formData.prizePool || !formData.deadline) {
       toast.error('Please fill in all fields')
       return
     }
 
-    if (!connected || !wallet) {
-      if (isDemoMode) {
-        setIsCreating(true)
-        setTimeout(() => {
-          setIsCreating(false)
-          setShowSuccess(true)
-          toast.success('Bounty created successfully (DEMO MODE)!')
-        }, 2000)
+    if (fieldErrors.videoUrl || fieldErrors.deadline) {
+      toast.error('Please fix the errors before submitting.')
+      return
+    }
+
+    if (!connected || !wallet || !publicKey) {
+      // Try to programmatically open the wallet connect modal if available
+      try {
+        if (wallet && typeof (wallet as any).connect === 'function') {
+          await (wallet as any).connect()
+        }
+      } catch (e) {
+        console.warn('wallet.connect() failed or was cancelled', e)
+      }
+
+      if (!connected || !wallet || !publicKey) {
+        toast.error('Please connect your Solana wallet to finalize.')
         return
       }
-      toast.error('Please connect your Solana wallet (or use a Burner in Debug) to finalize.')
-      return
     }
 
     setIsCreating(true)
 
     try {
-      // Create a compatible wallet for Anchor
-      const anchorWallet = 'address' in wallet ? {
-        publicKey: new PublicKey(wallet.address),
+      // Ensure wallet is connected (we may have called wallet.connect earlier).
+      // Create an Anchor-compatible wallet wrapper that delegates signing to the
+      // wallet-adapter's signTransaction / signAllTransactions functions.
+      const anchorWallet = {
+        publicKey,
         signTransaction: async (tx: any) => {
-          const signer = await (wallet as any).getSigner();
-          return signer.signTransaction(tx);
+          if (!signTransaction) throw new Error('Wallet does not support signTransaction')
+          return signTransaction(tx)
         },
         signAllTransactions: async (txs: any[]) => {
-          const signer = await (wallet as any).getSigner();
-          return signer.signAllTransactions(txs);
+          if (!signAllTransactions) throw new Error('Wallet does not support signAllTransactions')
+          return signAllTransactions(txs)
         },
-      } : wallet; // Burner wallet already matches the interface
+      }
 
       const program = getProgram(connection, anchorWallet)
-      
-      // Extract video ID from URL or use a hash of the name
-      const originalVideoId = formData.videoUrl.split('v=')[1]?.split('&')[0] || 
+
+      const originalVideoId = formData.videoUrl.split('v=')[1]?.split('&')[0] ||
                              Math.random().toString(36).substring(7)
 
-      const [poolPda] = PublicKey.findProgramAddressSync(
+      // Derive PDAs using the runtime program.programId to avoid mismatches
+      const [poolPda] = await PublicKey.findProgramAddress(
         [Buffer.from('pool'), Buffer.from(originalVideoId)],
-        PROGRAM_ID
+        program.programId
       )
 
-      const [prizeVaultPda] = PublicKey.findProgramAddressSync(
+      // Check if pool already exists
+      const existingPool = await connection.getAccountInfo(poolPda)
+      if (existingPool) {
+        throw new Error('A pool for this video already exists. Please use a different video URL.')
+      }
+
+      const [prizeVaultPda] = await PublicKey.findProgramAddress(
         [Buffer.from('vault'), poolPda.toBuffer()],
-        PROGRAM_ID
+        program.programId
       )
 
-      const [creatorStatsPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('creator_stats'), anchorWallet.publicKey.toBuffer()],
-        PROGRAM_ID
+      const [creatorStatsPda] = await PublicKey.findProgramAddress(
+        [Buffer.from('creator_stats'), publicKey!.toBuffer()],
+        program.programId
       )
 
-      const [configPda] = PublicKey.findProgramAddressSync(
+      const [configPda] = await PublicKey.findProgramAddress(
         [Buffer.from('global_config_v1')],
-        PROGRAM_ID
+        program.programId
       )
 
-      // Get treasury from config (or just use a placeholder for now, 
-      // but the instruction expects a specific account)
-      const configAccount = await program.account.globalConfig.fetch(configPda)
-      const treasury = configAccount.treasury as PublicKey
+      // Verify GlobalConfig exists and belongs to our program and read treasury directly
+      const configAccount = await connection.getAccountInfo(configPda)
+      if (!configAccount) {
+        throw new Error('Platform not initialized. Please contact the admin to initialize the platform first.')
+      }
+
+      // Normalize data buffer and parse treasury at bytes [64,96)
+      let cfgData: Uint8Array
+      const raw = configAccount.data as any
+      if (typeof Buffer !== 'undefined' && Buffer.isBuffer(raw)) {
+        cfgData = new Uint8Array(raw)
+      } else if (raw instanceof Uint8Array) {
+        cfgData = raw
+      } else if (raw && raw.data) {
+        cfgData = new Uint8Array(raw.data)
+      } else if (typeof raw === 'string') {
+        cfgData = Uint8Array.from(atob(raw), c => c.charCodeAt(0))
+      } else {
+        throw new Error('Unable to parse GlobalConfig account data')
+      }
+
+      if (cfgData.length < 96) {
+        throw new Error('GlobalConfig account data too short')
+      }
+
+      const treasuryPubkey = new PublicKey(cfgData.slice(64, 96))
 
       const prizeAmount = new anchor.BN(parseFloat(formData.prizePool) * 1e9)
-      const expiryTimestamp = new anchor.BN(new Date(formData.deadline).getTime() / 1000)
+      
+      // Parse Brazilian date format (DD/MM/YYYY) to Unix timestamp
+      function parseBrazilianDate(dateStr: string): number {
+        // Try Brazilian format DD/MM/YYYY
+        const brazilianFormat = /^(\d{2})\/(\d{2})\/(\d{4})$/
+        const match = dateStr.match(brazilianFormat)
+        
+        if (match) {
+          const [, day, month, year] = match
+          // Create date in UTC to avoid timezone issues
+          const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), 23, 59, 59)
+          return Math.floor(date.getTime() / 1000)
+        }
+        
+        // Try ISO format YYYY-MM-DD (for date input fallback)
+        const isoDate = new Date(dateStr)
+        if (!isNaN(isoDate.getTime())) {
+          return Math.floor(isoDate.getTime() / 1000)
+        }
+        
+        // Invalid date
+        return NaN
+      }
 
-      // Default scoring rules: 50% views, 30% likes, 20% comments
+      const deadlineTimestamp = parseBrazilianDate(formData.deadline)
+      // Use network time from the RPC when possible to avoid client clock skew
+      let nowTimestamp = Math.floor(Date.now() / 1000)
+      try {
+        const slot = await connection.getSlot()
+        const blockTime = await connection.getBlockTime(slot)
+        if (blockTime && typeof blockTime === 'number') {
+          nowTimestamp = Math.floor(blockTime)
+        }
+      } catch (e) {
+        console.warn('Failed to fetch blockTime from RPC, falling back to local time', e)
+      }
+      
+      // Validate deadline format
+      if (isNaN(deadlineTimestamp)) {
+        throw new Error('Invalid date format. Please use DD/MM/YYYY format (e.g., 20/10/2026)')
+      }
+
+      // Debug logs
+      console.log('=== DEBUG CREATE POOL ===')
+      console.log('originalVideoId:', originalVideoId)
+      console.log('prizeAmount (lamports):', prizeAmount.toString())
+      console.log('prizeAmount (SOL):', parseFloat(formData.prizePool))
+      console.log('deadline input:', formData.deadline)
+      console.log('deadlineTimestamp:', deadlineTimestamp)
+      console.log('nowTimestamp:', nowTimestamp)
+      console.log('isInPast:', deadlineTimestamp <= nowTimestamp)
+      console.log('poolPda:', poolPda.toString())
+      console.log('prizeVaultPda:', prizeVaultPda.toString())
+      console.log('creatorStatsPda:', creatorStatsPda.toString())
+      console.log('configPda:', configPda.toString())
+      console.log('treasuryPubkey:', treasuryPubkey.toString())
+      console.log('=========================')
+
+      // Validate deadline is in the future
+      if (deadlineTimestamp <= nowTimestamp) {
+        throw new Error('Deadline must be in the future. Please select a future date.')
+      }
+
+      const expiryTimestamp = new anchor.BN(deadlineTimestamp)
+
+      // Validate prize amount
+      if (parseFloat(formData.prizePool) <= 0) {
+        throw new Error('Prize amount must be greater than 0')
+      }
+
       const scoringRules = {
         viewsWeight: 5000,
         likesWeight: 3000,
         commentsWeight: 2000,
       }
 
-      const tx = await program.methods
+      // Diagnostic: verify on-chain GlobalConfig.treasury matches the treasury we will pass
+      // Start with the manual parse
+      let treasuryToPass: PublicKey = treasuryPubkey
+      try {
+        // Try to fetch parsed account via Anchor first (if supported)
+        let onchainConfig: any = null
+        try {
+          onchainConfig = await program.account.globalConfig.fetch(configPda)
+        } catch (e) {
+          // fallback: parse raw buffer (we already did above), but keep this for extra validation
+          console.warn('program.account.globalConfig.fetch failed:', e)
+        }
+
+        const onchainTreasuryPub = onchainConfig?.treasury ? new PublicKey(onchainConfig.treasury) : null
+
+        console.log('Diagnostic: programId=', program.programId.toBase58())
+        console.log('Diagnostic: configPda=', configPda.toBase58())
+        console.log('Diagnostic: onchainTreasury (anchor fetch?)=', onchainTreasuryPub?.toBase58() ?? 'none')
+        console.log('Diagnostic: parsedTreasury(from raw cfg)=', treasuryPubkey.toBase58())
+
+        // If Anchor's parsed config disagrees with our manual parse, prefer Anchor's value
+        // because the program will validate against the value Anchor sees.
+        if (onchainTreasuryPub && onchainTreasuryPub.toBase58() !== treasuryPubkey.toBase58()) {
+          console.warn('Treasury mismatch detected. Using Anchor-parsed on-chain treasury for the transaction.')
+          treasuryToPass = onchainTreasuryPub
+        }
+      } catch (diagErr) {
+        console.error('Diagnostics failure before sending transaction:', diagErr)
+        throw diagErr
+      }
+
+      // Use Anchor's rpc() to build, sign and send the transaction (provider wallet will be used).
+      // We avoid constructing a manual Transaction here and let Anchor handle it.
+      // Log on-chain account info for config and treasuryToPass to aid debugging
+      try {
+        const cfgInfo = await connection.getAccountInfo(configPda)
+        const treInfo = await connection.getAccountInfo(treasuryToPass)
+        console.log('config account owner:', cfgInfo?.owner?.toBase58(), 'lamports:', cfgInfo?.lamports)
+        console.log('treasury account owner:', treInfo?.owner?.toBase58(), 'lamports:', treInfo?.lamports)
+      } catch (e) {
+        console.warn('Failed to fetch account info for diagnostics', e)
+      }
+
+      // NOTE: we skip .simulate() here because AnchorProvider.simulate requires a fee payer
+      // to be set on the transaction which may not be available in all browser wallets.
+      // Proceed to send the transaction; provider.wallet will be used to sign and pay fees.
+
+      // Build the instruction and send manually using the wallet adapter to avoid
+      // AnchorProvider.sendAndConfirm issues in browser wallets.
+      const ix = await program.methods
         .createPool(originalVideoId, prizeAmount, scoringRules, expiryTimestamp)
         .accounts({
           pool: poolPda,
-          prizeVault: prizeVaultPda,
-          creatorStats: creatorStatsPda,
+          prize_vault: prizeVaultPda,
+          creator_stats: creatorStatsPda,
           config: configPda,
-          treasury: treasury,
-          creator: anchorWallet.publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          treasury: treasuryToPass,
+          creator: publicKey,
+          system_program: anchor.web3.SystemProgram.programId,
         } as any)
-        .rpc()
+        .instruction()
 
-      console.log('Bounty created! TX:', tx)
-      toast.success('Bounty created successfully!')
+      const tx = new anchor.web3.Transaction().add(ix)
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed')
+      tx.recentBlockhash = blockhash
+      tx.feePayer = publicKey!
+
+      if (!signTransaction) throw new Error('Wallet does not support signTransaction')
+      const signed = await signTransaction(tx)
+      const rawTx = signed.serialize()
+      const sig = await connection.sendRawTransaction(rawTx)
+      
+      try {
+        await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed')
+      } catch (confirmError) {
+        console.warn('WS confirm fail, trying HTTP poll fallback...', confirmError)
+        // Fallback: poll HTTP because Devnet WebSockets often fail
+        let txLanded = false;
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          const txInfo = await connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+          if (txInfo) {
+            txLanded = true;
+            break;
+          }
+        }
+        if (!txLanded) {
+          throw confirmError;
+        }
+      }
+
+      console.log('Transaction sent, signature:', sig)
+      
+      try {
+        console.log('Saving metadata off-chain to core-api...')
+        await coreApi.updatePoolMetadata(poolPda.toBase58(), formData.name, formData.hashtag)
+        console.log('Metadata saved successfully!')
+      } catch (metaErr) {
+        console.error('Core API metadata write failed:', metaErr)
+      }
+      
+      toast.success('Bounty created! Signature: ' + sig)
       setShowSuccess(true)
     } catch (error: any) {
       console.error('Error creating bounty:', error)
+      // Print Anchor logs if present for deeper inspection
+      try {
+        const logs = (error && (error.logs || error.error?.logs || error.programLogs)) || null
+        if (logs) console.error('Anchor logs:', logs)
+      } catch (e) {
+        console.error('Failed to print anchor logs helper:', e)
+      }
+
+      // As a last resort, if the error contains a transaction signature, fetch its logs
+      try {
+        const sig = error?.txSig || error?.signature
+        if (sig && connection) {
+          const tx = await connection.getTransaction(sig, { commitment: 'confirmed' })
+          console.error('fetched transaction result for signature', sig, tx)
+        }
+      } catch (e) {
+        console.error('Failed to fetch transaction details:', e)
+      }
+
       toast.error('Failed to create bounty: ' + (error.message || 'Unknown error'))
     } finally {
       setIsCreating(false)
     }
-  }
-
-  const steps = [
-    { step: 1, label: 'Bounty Details', completed: currentStep > 1 },
-    { step: 2, label: 'Prize & Escrow', completed: currentStep > 2 },
-    { step: 3, label: 'Confirmation', completed: false },
-  ]
-
-  console.log('CreateBountyPage State:', { isAuthenticated, sdkHasLoaded, isDemoMode, hasWallet: !!primaryWallet })
-
-  if (isLoadingWallet) {
-    return (
-      <MainLayout showSidebar={false}>
-        <div className="flex min-h-[60vh] items-center justify-center">
-          <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-        </div>
-      </MainLayout>
-    )
   }
 
   if (!connected) {
@@ -189,14 +442,12 @@ export default function CreateBountyPage() {
             account_balance_wallet
           </span>
           <h1 className="mb-4 font-headline text-3xl font-bold text-on-surface">
-            Initializing Wallet...
+            Connect Your Wallet
           </h1>
           <p className="mb-8 max-w-md text-on-surface-variant">
-            We are setting up a secure session wallet for you to create your bounty.
+            Connect your Solana wallet to create a new bounty.
           </p>
-          <div className="flex flex-col gap-4">
-            <DynamicWidget />
-          </div>
+          <WalletMultiButton />
         </div>
       </MainLayout>
     )
@@ -221,7 +472,7 @@ export default function CreateBountyPage() {
             Your bounty <span className="font-bold text-secondary">{formData.name || 'New Bounty'}</span> is now live.
           </p>
           <p className="mb-8 max-w-md text-sm text-on-surface-variant">
-            {totalEscrow.toFixed(3)} SOL has been locked in escrow. Clippers can now start submitting their clips!
+            {totalEscrow.toFixed(3)} SOL has been locked in escrow. Editors can now start submitting their clips!
           </p>
           <div className="flex gap-4">
             <a
@@ -256,23 +507,6 @@ export default function CreateBountyPage() {
         <div className="grid grid-cols-1 gap-12 lg:grid-cols-12">
           {/* Sidebar: Progress and Context */}
           <aside className="space-y-8 lg:col-span-4">
-            {/* Wallet Status Badge */}
-            {burner && !primaryWallet && (
-              <div className="rounded-2xl border border-secondary/20 bg-secondary/5 p-4 animate-in fade-in slide-in-from-top-4 duration-500">
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="material-symbols-outlined text-secondary">auto_awesome</span>
-                  <p className="text-xs font-bold uppercase tracking-widest text-secondary">Abstracted Account Active</p>
-                </div>
-                <p className="text-[10px] text-on-surface-variant font-mono break-all mb-2">
-                  {burner.publicKey.toString()}
-                </p>
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-on-surface-variant">Devnet Balance</span>
-                  <span className="text-xs font-bold text-secondary">{burnerBalance.toFixed(3)} SOL</span>
-                </div>
-              </div>
-            )}
-
             <div className="space-y-6">
               <h2 className="text-4xl font-bold tracking-tighter text-on-surface">
                 Launch a new <br />
@@ -284,53 +518,31 @@ export default function CreateBountyPage() {
               </p>
             </div>
 
-            {/* Progress Indicator */}
-            <div className="relative space-y-8 before:absolute before:bottom-2 before:left-[11px] before:top-2 before:w-[2px] before:bg-surface-container-high">
-              {steps.map((s) => (
-                <div key={s.step} className="relative flex items-start gap-4">
-                  <div
-                    className={`z-10 flex h-6 w-6 items-center justify-center rounded-full ${
-                      s.completed
-                        ? 'bg-secondary'
-                        : currentStep === s.step
-                          ? 'border-2 border-surface bg-primary'
-                          : 'bg-surface-container-high'
-                    }`}
-                  >
-                    {s.completed && (
-                      <span
-                        className="material-symbols-outlined text-xs font-bold text-surface-container-lowest"
-                        style={{ fontVariationSettings: "'FILL' 1" }}
-                      >
-                        check
-                      </span>
-                    )}
-                    {!s.completed && currentStep === s.step && (
-                      <div className="h-2 w-2 rounded-full bg-surface"></div>
-                    )}
-                  </div>
-                  <div className="flex flex-col">
-                    <span
-                      className={`text-sm font-bold uppercase tracking-widest ${
-                        currentStep === s.step
-                          ? 'text-secondary'
-                          : 'text-on-surface-variant'
-                      }`}
-                    >
-                      Step {s.step}
-                    </span>
-                    <span
-                      className={`font-headline text-lg ${
-                        currentStep === s.step
-                          ? 'text-on-surface'
-                          : 'text-on-surface-variant'
-                      }`}
-                    >
-                      {s.label}
-                    </span>
-                  </div>
+            {/* How it works */}
+            <div className="space-y-4">
+              <h3 className="font-headline font-bold text-on-surface">How it works</h3>
+              <div className="space-y-3 text-sm text-on-surface-variant">
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">video_library</span>
+                  <span>Enter a YouTube video link</span>
                 </div>
-              ))}
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">sell</span>
+                  <span>Set your prize pool in SOL</span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">event</span>
+                  <span>Choose a deadline for submissions</span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">groups</span>
+                  <span>Editors submit clips and compete</span>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="material-symbols-outlined text-primary text-xs">emoji_events</span>
+                  <span>Winner receives the prize automatically</span>
+                </div>
+              </div>
             </div>
 
             {/* AI Oracle Summary */}
@@ -424,17 +636,36 @@ export default function CreateBountyPage() {
                   <label className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
                     Video URL (YouTube, Drive, or Loom)
                   </label>
-                  <input
-                    type="url"
-                    name="videoUrl"
-                    value={formData.videoUrl}
-                    onChange={handleInputChange}
-                    className="w-full border-0 border-b border-outline-variant bg-surface-container-low px-0 py-3 text-on-surface transition-all placeholder:text-outline-variant focus:border-primary focus:ring-0"
-                    placeholder="https://youtube.com/watch?v=..."
-                  />
-                  <p className="text-[10px] italic text-on-surface-variant">
-                    Creators will use this specific source to generate clips.
-                  </p>
+                  <div className="relative">
+                    <input
+                      type="url"
+                      name="videoUrl"
+                      value={formData.videoUrl}
+                      onChange={handleInputChange}
+                      onBlur={handleVideoUrlBlur}
+                      className={`w-full border-0 border-b bg-surface-container-low px-0 py-3 text-on-surface transition-all placeholder:text-outline-variant focus:ring-0 ${
+                        fieldErrors.videoUrl
+                          ? 'border-error focus:border-error'
+                          : 'border-outline-variant focus:border-primary'
+                      }`}
+                      placeholder="https://youtube.com/watch?v=..."
+                    />
+                    {isCheckingVideo && (
+                      <span className="absolute right-0 top-3 material-symbols-outlined animate-spin text-sm text-on-surface-variant">
+                        progress_activity
+                      </span>
+                    )}
+                  </div>
+                  {fieldErrors.videoUrl ? (
+                    <div className="flex items-center gap-1.5 text-xs text-error">
+                      <span className="material-symbols-outlined text-sm">error</span>
+                      {fieldErrors.videoUrl}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] italic text-on-surface-variant">
+                      Editors will use this specific source to generate clips.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -479,9 +710,20 @@ export default function CreateBountyPage() {
                       type="date"
                       name="deadline"
                       value={formData.deadline}
-                      onChange={handleInputChange}
-                      className="w-full border-0 border-b border-outline-variant bg-surface-container-low px-0 py-3 text-on-surface transition-all focus:border-primary focus:ring-0"
+                      onChange={handleDeadlineChange}
+                      min={new Date(Date.now() + 86400000).toISOString().split('T')[0]}
+                      className={`w-full border-0 border-b bg-surface-container-low px-0 py-3 text-on-surface transition-all focus:ring-0 ${
+                        fieldErrors.deadline
+                          ? 'border-error focus:border-error'
+                          : 'border-outline-variant focus:border-primary'
+                      }`}
                     />
+                    {fieldErrors.deadline && (
+                      <div className="flex items-center gap-1.5 text-xs text-error">
+                        <span className="material-symbols-outlined text-sm">event_busy</span>
+                        {fieldErrors.deadline}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -516,34 +758,21 @@ export default function CreateBountyPage() {
               </div>
 
               {/* Action Bar */}
-              <div className="flex flex-col items-center justify-between gap-6 border-t border-outline-variant/10 pt-8 md:flex-row">
-                <button className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-on-surface-variant transition-colors hover:text-on-surface">
-                  <span className="material-symbols-outlined text-lg">
-                    arrow_back
-                  </span>
-                  Cancel Draft
+              <div className="flex justify-end border-t border-outline-variant/10 pt-8">
+                <button
+                  onClick={handleCreateBounty}
+                  disabled={isCreating}
+                  className="gradient-solana flex items-center justify-center gap-2 rounded-xl px-10 py-4 font-bold text-on-primary-fixed transition-all hover:shadow-[0_0_20px_rgba(52,254,160,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isCreating ? (
+                    <>
+                      <span className="material-symbols-outlined animate-spin">progress_activity</span>
+                      Creating Bounty...
+                    </>
+                  ) : (
+                    'Create Bounty'
+                  )}
                 </button>
-                <div className="flex w-full gap-4 md:w-auto">
-                  <button className="flex-1 rounded-xl border border-outline-variant px-10 py-4 font-bold text-on-surface transition-all hover:bg-surface-container-high md:flex-initial">
-                    Save Progress
-                  </button>
-                  <button
-                    onClick={handleCreateBounty}
-                    disabled={isCreating}
-                    className="gradient-solana flex flex-1 items-center justify-center gap-2 rounded-xl px-10 py-4 font-bold text-on-primary-fixed transition-all hover:shadow-[0_0_20px_rgba(52,254,160,0.4)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-70 md:flex-initial"
-                  >
-                    {isCreating ? (
-                      <>
-                        <span className="material-symbols-outlined animate-spin">progress_activity</span>
-                        Creating Bounty...
-                      </>
-                    ) : currentStep < 3 ? (
-                      'Next: Prize Pool'
-                    ) : (
-                      'Create Bounty'
-                    )}
-                  </button>
-                </div>
               </div>
             </div>
           </section>

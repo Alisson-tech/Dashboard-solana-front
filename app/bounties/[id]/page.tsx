@@ -2,20 +2,27 @@
 
 import { use, useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useConnection } from '@solana/wallet-adapter-react'
-import { DynamicWidget, useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { useConnection, useWallet } from '@solana/wallet-adapter-react'
+import dynamic from 'next/dynamic'
+
+const WalletMultiButton = dynamic(
+  async () => (await import('@solana/wallet-adapter-react-ui')).WalletMultiButton,
+  { ssr: false }
+)
 import { MainLayout } from '@/components/layout/main-layout'
 import { LeaderboardTable } from '@/components/bounty/leaderboard-table'
 import { coreApi, Pool } from '@/lib/api'
 import { getProgram, PROGRAM_ID } from '@/lib/anchor/program'
+import { getPools, PoolStatus } from '@/lib/solana'
+import { EditorOnboardingGate } from '@/components/onboarding/EditorOnboardingGate'
 import { PublicKey } from '@solana/web3.js'
 import * as anchor from '@coral-xyz/anchor'
 import { toast } from 'sonner'
+import { getYouTubeChannelId } from '@/lib/youtube'
 
-// Helper for SHA-256 hash
 async function sha256(message: string) {
   const msgBuffer = new TextEncoder().encode(message);
-  const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer as any);
   return new Uint8Array(hashBuffer);
 }
 
@@ -89,13 +96,10 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
   const { id: poolPda } = use(params)
   const [pool, setPool] = useState<Pool | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  
-  const { isAuthenticated, primaryWallet, sdkHasLoaded } = useDynamicContext()
+
+  const { publicKey, connected } = useWallet()
   const { connection } = useConnection()
-  
-  const connected = isAuthenticated
-  const wallet = primaryWallet
-  const isLoadingWallet = !sdkHasLoaded
+
   const [submitUrl, setSubmitUrl] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitSuccess, setSubmitSuccess] = useState(false)
@@ -103,34 +107,47 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
 
   useEffect(() => {
     const fetchPool = async () => {
+      if (!connection) {
+        setIsLoading(false)
+        return
+      }
+
       try {
-        const data = await coreApi.getPool(poolPda)
-        setPool(data)
+        // Fetch from blockchain
+        const allPools = await getPools(connection)
+        
+        // Find the specific pool by pda_address
+        const foundPool = allPools.find(p => p.pda_address.toBase58() === poolPda)
+        
+        if (foundPool) {
+          setPool({
+            pda_address: foundPool.pda_address.toBase58(),
+            creator_wallet: foundPool.creator.toBase58(),
+            original_video_id: foundPool.originalVideoId,
+            prize_amount: foundPool.prizeAmount,
+            participant_count: foundPool.participantCount,
+            status: 'OPEN' as const,
+            expiry_timestamp: new Date(foundPool.expiryTimestamp * 1000).toISOString(),
+            total_score: foundPool.totalScore,
+            scoring_rules: { 
+              views_weight: foundPool.scoringRules.viewsWeight, 
+              likes_weight: foundPool.scoringRules.likesWeight, 
+              comments_weight: foundPool.scoringRules.commentsWeight 
+            }
+          })
+        } else {
+          // Pool not found or expired - try to get from all accounts directly
+          console.log('Pool not found in filtered list, trying to get from chain directly')
+        }
       } catch (error) {
         console.error('Error fetching pool details:', error)
-        // Fallback to mock data if not found in API
-        const { mockBounties } = await import('@/lib/mock-data')
-        const mockBounty = mockBounties.find(b => b.id === poolPda)
-        if (mockBounty) {
-          setPool({
-            pda_address: mockBounty.id,
-            creator_wallet: 'DemoOwner',
-            original_video_id: mockBounty.hashtag,
-            prize_amount: mockBounty.prizePool * 1e9,
-            participant_count: mockBounty.totalClips,
-            status: 'OPEN',
-            expiry_timestamp: mockBounty.deadline.toISOString(),
-            total_score: 0,
-            scoring_rules: { views_weight: 50, likes_weight: 30, comments_weight: 20 }
-          })
-        }
       } finally {
         setIsLoading(false)
       }
     }
 
     fetchPool()
-  }, [poolPda])
+  }, [poolPda, connection])
 
   const handleSubmit = async () => {
     if (!submitUrl.trim() || !pool) {
@@ -138,15 +155,13 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       return
     }
 
-    if (!connected || !wallet) {
+    if (!connected || !publicKey) {
       setSubmitError('Please connect your wallet first')
       return
     }
 
-    // Validate URL format
-    const urlPattern = /^https?:\/\/(www\.)?(tiktok\.com|instagram\.com|youtube\.com|youtu\.be)/i
-    if (!urlPattern.test(submitUrl)) {
-      setSubmitError('Please enter a valid TikTok, Instagram, or YouTube URL')
+    if (!submitUrl.match(/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)/i)) {
+      setSubmitError('Please enter a valid YouTube URL')
       return
     }
 
@@ -154,35 +169,41 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
     setSubmitError('')
 
     try {
-      // Create a compatible wallet for Anchor
+      const extractedChannelId = await getYouTubeChannelId(submitUrl)
+      if (!extractedChannelId) {
+        setSubmitError('Could not verify the channel from this video URL')
+        setIsSubmitting(false)
+        return
+      }
+
       const anchorWallet = {
-        publicKey: new PublicKey(wallet.address),
+        publicKey,
         signTransaction: async (tx: any) => {
-          const signer = await wallet.getSigner();
-          return signer.signTransaction(tx);
+          const signer = await (window as any).solana?.signTransaction
+          return signer(tx)
         },
         signAllTransactions: async (txs: any[]) => {
-          const signer = await wallet.getSigner();
-          return signer.signAllTransactions(txs);
+          const signer = await (window as any).solana?.signAllTransactions
+          return signer(txs)
         },
-      };
+      }
 
       const program = getProgram(connection, anchorWallet)
-      
+
       const linkHash = await sha256(submitUrl)
-      
+
       const [entryPda] = PublicKey.findProgramAddressSync(
         [Buffer.from('entry'), new PublicKey(poolPda).toBuffer(), linkHash],
         PROGRAM_ID
       )
 
       const [userProfilePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('user_profile'), new PublicKey(wallet.address).toBuffer()],
+        [Buffer.from('user_profile'), publicKey.toBuffer()],
         PROGRAM_ID
       )
 
       const [stakeAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('stake'), new PublicKey(wallet.address).toBuffer()],
+        [Buffer.from('stake'), publicKey.toBuffer()],
         PROGRAM_ID
       )
 
@@ -191,37 +212,87 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
         PROGRAM_ID
       )
 
-      // Ensure user is initialized
+      toast.info("Preparing transaction...", { id: 'submit_toast' })
+      const tx = new anchor.web3.Transaction()
+
+      let channelId = extractedChannelId
+
       try {
         const userExists = await connection.getAccountInfo(userProfilePda)
         if (!userExists) {
-            toast.info("Initializing your clipper profile...")
-            await program.methods.initializeUser().accounts({
+            console.log("Adding initializeUser instruction")
+            const initIx = await program.methods.initializeUser([extractedChannelId]).accounts({
                 userProfile: userProfilePda,
-                stakeAccount: stakeAccountPda,
-                authority: new PublicKey(wallet.address),
+                config: configPda,
+                authority: publicKey,
                 systemProgram: anchor.web3.SystemProgram.programId,
-            } as any).rpc()
+            } as any).instruction()
+            tx.add(initIx)
+        } else {
+            const rawProfile: any = await (program.account as any).userProfile.fetch(userProfilePda)
+            const registeredChannels: string[] = rawProfile?.channelIds ?? []
+            const match = registeredChannels.find(c => c === extractedChannelId)
+            if (!match) {
+                const msg = `Channel "${extractedChannelId}" is not registered. ` +
+                    `Registered channels: ${registeredChannels.join(', ') || 'none'}`
+                setSubmitError(msg)
+                setIsSubmitting(false)
+                return
+            }
+            channelId = match
+        }
+
+        const stakeExists = await connection.getAccountInfo(stakeAccountPda)
+        if (!stakeExists) {
+            console.log("Adding depositStake instruction")
+            const depositIx = await program.methods.depositStake(new anchor.BN(150_000_000)).accounts({
+                stakeAccount: stakeAccountPda,
+                config: configPda,
+                authority: publicKey,
+                systemProgram: anchor.web3.SystemProgram.programId,
+            } as any).instruction()
+            tx.add(depositIx)
         }
       } catch (e) {
-        console.log("User already initialized or error", e)
+        console.log("Error checking account existence", e)
       }
 
-      const tx = await program.methods
-        .joinPool(Array.from(linkHash), submitUrl, "CHANNEL_ID")
+      const joinIx = await program.methods
+        .joinPool(Array.from(linkHash), submitUrl, channelId)
         .accounts({
           entry: entryPda,
           pool: new PublicKey(poolPda),
           userProfile: userProfilePda,
           stakeAccount: stakeAccountPda,
           config: configPda,
-          authority: new PublicKey(wallet.address),
+          authority: publicKey,
           systemProgram: anchor.web3.SystemProgram.programId,
         } as any)
-        .rpc()
+        .instruction()
 
-      console.log('Submission success! TX:', tx)
-      toast.success('Clip submitted successfully! Waiting for AI Oracle...')
+      tx.add(joinIx)
+
+      const latestBlockhash = await connection.getLatestBlockhash()
+      tx.recentBlockhash = latestBlockhash.blockhash
+      tx.feePayer = publicKey
+
+      const signedTx = await anchorWallet.signTransaction(tx)
+      const txid = await connection.sendRawTransaction(signedTx.serialize())
+
+      const confirmPromise = connection.confirmTransaction({
+        signature: txid,
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      }, 'confirmed')
+
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Transaction not confirmed within 5 minutes')), 300_000)
+      )
+
+      await Promise.race([confirmPromise, timeout])
+
+      console.log('Submission success! TX:', txid)
+      toast.success('Clip submitted successfully! Waiting for AI Oracle...', { id: 'submit_toast' })
       setSubmitSuccess(true)
       setSubmitUrl('')
     } catch (error: any) {
@@ -232,11 +303,10 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       setIsSubmitting(false)
     }
 
-    // Reset success message after 5 seconds
     setTimeout(() => setSubmitSuccess(false), 5000)
   }
 
-  if (isLoading || isLoadingWallet) {
+  if (isLoading) {
     return (
       <MainLayout>
         <div className="flex min-h-[60vh] items-center justify-center">
@@ -262,6 +332,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
 
   return (
     <MainLayout showSidebar={false}>
+      <EditorOnboardingGate>
       <div className="mx-auto max-w-[1440px]">
         {/* Header & Countdown */}
         <div className="mb-12 flex flex-col justify-between gap-6 md:flex-row md:items-end">
@@ -274,11 +345,11 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
                 chevron_right
               </span>
               <span className="text-secondary">
-                Challenge #{pool.pda_address.slice(0, 8)}
+                Bounty #{pool.pda_address.slice(0, 8)}
               </span>
             </nav>
             <h1 className="font-headline text-4xl font-bold tracking-tight text-on-surface md:text-6xl">
-              Viral Clip <span className="gradient-text">Challenge</span>
+              Viral Clip <span className="gradient-text">Bounty</span>
             </h1>
             <p className="mt-2 text-on-surface-variant">Original Video: {pool.original_video_id}</p>
           </div>
@@ -367,7 +438,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
                       You need to connect your Solana wallet and pay the entry stake (0.05 SOL)
                     </p>
                   </div>
-                  <DynamicWidget />
+                  <WalletMultiButton />
                 </div>
               ) : (
                 <>
@@ -448,7 +519,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
               {pool.participant_count}
             </div>
             <div className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
-              Active Clippers
+              Active Editors
             </div>
           </div>
           <div className="group rounded-3xl border border-outline-variant/10 bg-surface-container-low p-8 transition-colors hover:border-tertiary/30">
@@ -475,6 +546,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
           </div>
         </div>
       </div>
+      </EditorOnboardingGate>
     </MainLayout>
   )
 }

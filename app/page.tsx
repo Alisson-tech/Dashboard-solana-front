@@ -1,12 +1,28 @@
 'use client'
 
 import Link from 'next/link'
-import { DynamicWidget, useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { useWallet } from '@solana/wallet-adapter-react'
+import dynamic from 'next/dynamic'
+
+const WalletMultiButton = dynamic(
+  async () => (await import('@solana/wallet-adapter-react-ui')).WalletMultiButton,
+  { ssr: false }
+)
 import { mockBounties, formatTimeLeft } from '@/lib/mock-data'
+import { useAuth } from '@/context/auth-context'
 
 export default function HomePage() {
-  const { isAuthenticated } = useDynamicContext()
-  const connected = isAuthenticated
+  const { publicKey } = useWallet()
+  const { isOnboarded, role, isLoading } = useAuth()
+  const connected = !!publicKey
+
+  console.log('HomePage render:', { isOnboarded, role, isLoading, connected })
+
+  const getDashboardUrl = () => {
+    console.log('getDashboardUrl:', { isOnboarded, isLoading, role })
+    if (!isOnboarded || isLoading) return '/onboarding'
+    return role === 'creator' ? '/dashboard' : '/editor-dashboard'
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -32,7 +48,7 @@ export default function HomePage() {
               </Link>
             </div>
           </div>
-          <DynamicWidget />
+          <WalletMultiButton />
         </div>
       </nav>
 
@@ -52,33 +68,33 @@ export default function HomePage() {
               Powered by Solana
             </span>
             <h1 className="mb-6 max-w-4xl text-balance font-headline text-5xl font-bold tracking-tight text-on-surface md:text-7xl">
-              Transforme{' '}
-              <span className="gradient-text">Visualizações</span> em{' '}
+              Turn{' '}
+              <span className="gradient-text">Views</span> into{' '}
               <span className="gradient-text">SOL</span>
             </h1>
             <p className="mb-10 max-w-2xl text-pretty text-lg text-on-surface-variant">
-              Plataforma de bounties para criadores de clips. Crie desafios, recompense
-              viralizações e ganhe SOL automaticamente com validação por IA.
+              A bounty platform for clip creators. Create challenges, reward engagement,
+              and earn SOL automatically with AI-powered validation.
             </p>
 
             <div className="flex flex-col gap-4 sm:flex-row">
-              {connected ? (
+              {connected && !isLoading ? (
                 <Link
-                  href="/dashboard"
+                  href={getDashboardUrl()}
                   className="gradient-solana flex items-center gap-3 rounded-xl px-8 py-4 font-bold text-on-primary-fixed shadow-[0_20px_40px_-10px_rgba(52,254,160,0.3)] transition-transform hover:scale-[1.02] active:scale-95"
                 >
                   <span className="material-symbols-outlined">dashboard</span>
-                  Ir para Dashboard
+                  {isOnboarded ? 'Go to Dashboard' : 'Complete Onboarding'}
                 </Link>
               ) : (
-                <DynamicWidget />
+                <WalletMultiButton />
               )}
               <Link
                 href="/bounties"
                 className="flex items-center gap-3 rounded-xl border border-outline-variant px-8 py-4 font-bold text-on-surface transition-colors hover:bg-surface-container-high"
               >
                 <span className="material-symbols-outlined">explore</span>
-                Explorar Bounties
+                Explore Bounties
               </Link>
             </div>
           </div>
@@ -86,27 +102,27 @@ export default function HomePage() {
           {/* How it Works */}
           <div className="mt-32">
             <h2 className="mb-12 text-center font-headline text-3xl font-bold text-on-surface">
-              Como Funciona
+              How It Works
             </h2>
             <div className="grid gap-6 md:grid-cols-3">
               {[
                 {
                   icon: 'add_circle',
-                  title: 'Crie um Bounty',
+                  title: 'Create a Bounty',
                   description:
-                    'Defina o desafio, a hashtag obrigatória e o prize pool em SOL. Os fundos ficam em escrow seguro.',
+                    'Define the challenge, required hashtag, and prize pool in SOL. Funds are locked in escrow.',
                 },
                 {
                   icon: 'movie',
-                  title: 'Clippers Competem',
+                  title: 'Editors Compete',
                   description:
-                    'Criadores fazem clips do seu conteúdo e postam nas redes sociais com a hashtag.',
+                    'Creators make clips from your content and post them on social media with the hashtag.',
                 },
                 {
                   icon: 'psychology',
-                  title: 'IA Valida & Paga',
+                  title: 'AI Validates & Pays',
                   description:
-                    'Nosso Oracle AI verifica as métricas de engajamento e distribui o prêmio automaticamente.',
+                    'Our AI Oracle checks engagement metrics and distributes rewards automatically.',
                 },
               ].map((step, index) => (
                 <div
@@ -133,13 +149,13 @@ export default function HomePage() {
             <div className="mb-8 flex items-center justify-between">
               <h2 className="flex items-center gap-2 font-headline text-2xl font-bold text-on-surface">
                 <span className="h-6 w-2 rounded-full bg-secondary"></span>
-                Bounties Ativos
+                Active Bounties
               </h2>
               <Link
                 href="/bounties"
                 className="flex items-center gap-1 text-sm text-on-surface-variant transition-colors hover:text-secondary"
               >
-                Ver Todos{' '}
+                View All{' '}
                 <span className="material-symbols-outlined text-xs">
                   arrow_forward
                 </span>
@@ -196,10 +212,10 @@ export default function HomePage() {
           {/* Stats */}
           <div className="mt-32 grid gap-6 md:grid-cols-4">
             {[
-              { value: '1,248+', label: 'SOL Distribuído' },
-              { value: '8,432', label: 'Clips Criados' },
-              { value: '942', label: 'Clippers Ativos' },
-              { value: '99.8%', label: 'Precisão Oracle' },
+              { value: '1,248+', label: 'SOL Distributed' },
+              { value: '8,432', label: 'Clips Created' },
+              { value: '942', label: 'Active Editors' },
+              { value: '99.8%', label: 'Oracle Accuracy' },
             ].map((stat, index) => (
               <div
                 key={index}
@@ -219,13 +235,12 @@ export default function HomePage() {
           <div className="mt-32 rounded-3xl bg-gradient-to-br from-surface-container-high to-surface p-1">
             <div className="rounded-[calc(1.5rem-4px)] bg-surface p-12 text-center">
               <h2 className="mb-4 font-headline text-3xl font-bold text-on-surface">
-                Pronto para começar?
+                Ready to get started?
               </h2>
               <p className="mb-8 text-on-surface-variant">
-                Conecte sua carteira Solana e comece a criar bounties ou
-                participar como clipper.
+                Connect your Solana wallet and start creating bounties or participating as an editor.
               </p>
-              <DynamicWidget />
+              <WalletMultiButton />
             </div>
           </div>
         </div>

@@ -17,9 +17,9 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: 'SolCuts - Bounties para Clippers',
+  title: 'SolCuts - Bounty Platform for Creators',
   description:
-    'Transforme visualizações em SOL. Plataforma de bounties para criadores de clips usando Solana.',
+    'Turn views into SOL. A bounty platform for clip creators powered by Solana.',
   generator: 'v0.app',
   keywords: ['solana', 'bounty', 'clips', 'creators', 'crypto', 'web3'],
   icons: {
@@ -53,7 +53,7 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="pt-BR"
+      lang="en"
       className={`${spaceGrotesk.variable} ${inter.variable} dark bg-background`}
     >
       <head>

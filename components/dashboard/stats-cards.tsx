@@ -1,37 +1,74 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { mockDashboardStats } from '@/lib/mock-data'
-import { coreApi } from '@/lib/api'
+import { useConnection } from '@solana/wallet-adapter-react'
+import { useWallet } from '@solana/wallet-adapter-react'
+import { getCreatorPools, type VideoPoolData } from '@/lib/solana'
+import { PoolStatus } from '@/lib/solana'
+
+interface Stats {
+  totalSolLocked: number
+  activeChallenges: number
+  totalSubmissions: number
+  uniqueClippers: number
+  endingSoonCount: number
+}
+
+const defaultStats: Stats = {
+  totalSolLocked: 0,
+  activeChallenges: 0,
+  totalSubmissions: 0,
+  uniqueClippers: 0,
+  endingSoonCount: 0,
+}
 
 export function StatsCards() {
-  const [stats, setStats] = useState(mockDashboardStats)
+  const { connection } = useConnection()
+  const { publicKey } = useWallet()
+  const [stats, setStats] = useState<Stats>(defaultStats)
+  const [isLoading, setIsLoading] = useState(true)
   const [isLive, setIsLive] = useState(false)
 
   useEffect(() => {
-    const fetchRealStats = async () => {
+    if (!connection || !publicKey) {
+      setIsLoading(false)
+      return
+    }
+
+    const fetchCreatorStats = async () => {
       try {
-        const poolsData = await coreApi.getPools({ limit: 100 })
-        if (poolsData.items.length > 0) {
-          const totalSol = poolsData.items.reduce((acc, pool) => acc + (pool.prize_amount / 1e9), 0)
-          const active = poolsData.items.filter(p => p.status === 'OPEN').length
-          const totalSubs = poolsData.items.reduce((acc, pool) => acc + pool.participant_count, 0)
+        const pools = await getCreatorPools(connection, publicKey, { includeClosed: true })
+        
+        if (pools.length > 0) {
+          const now = Math.floor(Date.now() / 1000)
           
+          const totalSol = pools.reduce((acc, pool) => acc + Number(pool.prizeAmount) / 1e9, 0)
+          const activePools = pools.filter(p => p.status === PoolStatus.Open)
+          const active = activePools.length
+          const totalSubs = pools.reduce((acc, pool) => acc + pool.participantCount, 0)
+          
+          const endingSoon = activePools.filter(p => {
+            return p.expiryTimestamp > now && p.expiryTimestamp - now < 3 * 24 * 60 * 60
+          }).length
+
           setStats({
-            ...mockDashboardStats,
             totalSolLocked: totalSol,
             activeChallenges: active,
             totalSubmissions: totalSubs,
+            uniqueClippers: 0,
+            endingSoonCount: endingSoon,
           })
           setIsLive(true)
         }
       } catch (error) {
-        console.error('Error fetching real stats:', error)
+        console.error('Error fetching creator stats:', error)
+      } finally {
+        setIsLoading(false)
       }
     }
 
-    fetchRealStats()
-  }, [])
+    fetchCreatorStats()
+  }, [connection, publicKey])
 
   return (
     <div className="mb-12 grid grid-cols-1 gap-6 md:grid-cols-3">
@@ -42,19 +79,19 @@ export function StatsCards() {
           <p className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-on-surface-variant">
             Total $SOL Locked
           </p>
-          {isLive && <span className="flex h-2 w-2 rounded-full bg-secondary animate-pulse" title="Live Data"></span>}
+          {isLive && !isLoading && <span className="flex h-2 w-2 rounded-full bg-secondary animate-pulse" title="Live Data"></span>}
         </div>
         <div className="flex items-end gap-2">
           <span className="font-headline text-4xl font-bold text-on-surface">
-            {stats.totalSolLocked.toLocaleString('en-US', {
+            {isLoading ? '...' : stats.totalSolLocked.toLocaleString('en-US', {
               minimumFractionDigits: 2,
             })}
           </span>
           <span className="mb-1 font-bold text-secondary">SOL</span>
         </div>
-        <div className="mt-4 flex items-center gap-2 text-xs text-secondary">
+        <div className="mt-4 flex items-center gap-2 text-xs text-on-surface-variant">
           <span className="material-symbols-outlined text-sm">trending_up</span>
-          <span>+{stats.solChange}% this month</span>
+          <span>On-chain data</span>
         </div>
       </div>
 
@@ -65,17 +102,17 @@ export function StatsCards() {
           <p className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-on-surface-variant">
             Active Challenges
           </p>
-          {isLive && <span className="flex h-2 w-2 rounded-full bg-secondary animate-pulse" title="Live Data"></span>}
+          {isLive && !isLoading && <span className="flex h-2 w-2 rounded-full bg-secondary animate-pulse" title="Live Data"></span>}
         </div>
         <div className="flex items-end gap-2">
           <span className="font-headline text-4xl font-bold text-on-surface">
-            {stats.activeChallenges}
+            {isLoading ? '...' : stats.activeChallenges}
           </span>
           <span className="mb-1 font-medium text-on-surface-variant">LIVE</span>
         </div>
         <div className="mt-4 flex items-center gap-2 text-xs text-primary">
           <span className="material-symbols-outlined text-sm">bolt</span>
-          <span>{stats.endingSoonCount} ending soon</span>
+          <span>{isLoading ? '...' : stats.endingSoonCount} ending soon</span>
         </div>
       </div>
 
@@ -86,11 +123,11 @@ export function StatsCards() {
           <p className="font-sans text-xs font-bold uppercase tracking-[0.2em] text-on-surface-variant">
             Total Submissions
           </p>
-          {isLive && <span className="flex h-2 w-2 rounded-full bg-secondary animate-pulse" title="Live Data"></span>}
+          {isLive && !isLoading && <span className="flex h-2 w-2 rounded-full bg-secondary animate-pulse" title="Live Data"></span>}
         </div>
         <div className="flex items-end gap-2">
           <span className="font-headline text-4xl font-bold text-on-surface">
-            {stats.totalSubmissions.toLocaleString()}
+            {isLoading ? '...' : stats.totalSubmissions.toLocaleString()}
           </span>
         </div>
         <div className="mt-4 flex items-center gap-2 text-xs text-on-surface-variant">
@@ -100,10 +137,9 @@ export function StatsCards() {
           >
             stars
           </span>
-          <span>{stats.uniqueClippers} unique clippers</span>
+          <span>Across all your challenges</span>
         </div>
       </div>
     </div>
   )
 }
-

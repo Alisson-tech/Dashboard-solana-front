@@ -1,34 +1,45 @@
 'use client'
 
 import { useMemo, type ReactNode } from 'react'
-import { DynamicContextProvider } from '@dynamic-labs/sdk-react-core'
-import { SolanaWalletConnectors } from '@dynamic-labs/solana'
-import { ConnectionProvider } from '@solana/wallet-adapter-react'
-import { clusterApiUrl } from '@solana/web3.js'
+import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react'
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
+import {
+  PhantomWalletAdapter,
+  SolflareWalletAdapter,
+  TorusWalletAdapter,
+  CoinbaseWalletAdapter,
+  TrustWalletAdapter,
+} from '@solana/wallet-adapter-wallets'
+import '@solana/wallet-adapter-react-ui/styles.css'
+import { AuthProvider } from '@/context/auth-context'
 
 interface SolanaProviderProps {
   children: ReactNode
 }
 
 export function SolanaProvider({ children }: SolanaProviderProps) {
-  const endpoint = useMemo(() => clusterApiUrl('devnet'), [])
+  const endpoint = useMemo(() => process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://api.devnet.solana.com', [])
+
+  const wallets = useMemo(
+    () => [
+      new PhantomWalletAdapter(),
+      new SolflareWalletAdapter(),
+      new TorusWalletAdapter(),
+      new CoinbaseWalletAdapter(),
+      new TrustWalletAdapter(),
+    ],
+    []
+  )
 
   return (
     <ConnectionProvider endpoint={endpoint}>
-      <DynamicContextProvider
-        settings={{
-          environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENV_ID || '615fc5b4-e636-409f-b45c-0afa0dac9f0e',
-          walletConnectors: [SolanaWalletConnectors],
-          /* @ts-ignore */
-          createEmbeddedWallets: true,
-          /* @ts-ignore - Try to force creation for social providers */
-          shouldCreateWalletOnEmittingEmail: true,
-        }}
-      >
-        {children}
-      </DynamicContextProvider>
+      <WalletProvider wallets={wallets} autoConnect>
+        <WalletModalProvider>
+          <AuthProvider>
+            {children}
+          </AuthProvider>
+        </WalletModalProvider>
+      </WalletProvider>
     </ConnectionProvider>
   )
 }
-
-

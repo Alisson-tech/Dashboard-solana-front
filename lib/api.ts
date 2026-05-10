@@ -20,6 +20,8 @@ export interface Pool {
   pda_address: string
   creator_wallet: string
   original_video_id: string
+  name?: string
+  hashtag?: string
   prize_amount: number
   scoring_rules: {
     views_weight: number
@@ -45,6 +47,12 @@ export interface Entry {
   claimed: boolean
 }
 
+export interface UserProfile {
+  walletAddress: string
+  role: 'creator' | 'editor'
+  created_at?: string
+}
+
 export interface AuditLog {
   id: string
   entry_pda: string
@@ -55,6 +63,25 @@ export interface AuditLog {
 }
 
 export const coreApi = {
+  // Users
+  getUser: async (walletAddress: string) => {
+    const { data } = await apiClient.get<UserProfile>(`/users/${walletAddress}`)
+    return data
+  },
+
+  createUser: async (params: { walletAddress: string; role: 'creator' | 'editor' }) => {
+    const { data } = await apiClient.post<UserProfile>('/users', {
+      wallet_address: params.walletAddress,
+      role: params.role,
+    })
+    return data
+  },
+
+  getUserParticipations: async (walletAddress: string) => {
+    const { data } = await apiClient.get<PaginatedResponse<Entry>>(`/users/${walletAddress}/participations`)
+    return data
+  },
+
   // Pools
   getPools: async (params?: { status?: string; creator_wallet?: string; page?: number; limit?: number }) => {
     const { data } = await apiClient.get<PaginatedResponse<Pool>>('/pools', { params })
@@ -63,6 +90,30 @@ export const coreApi = {
 
   getPool: async (poolPda: string) => {
     const { data } = await apiClient.get<Pool>(`/pools/${poolPda}`)
+    return data
+  },
+
+  updatePoolMetadata: async (poolPda: string, name: string, hashtag?: string) => {
+    const { data } = await apiClient.post(`/pools/${poolPda}/metadata`, { name, hashtag })
+    return data
+  },
+
+  getPoolMetadata: async (poolPda: string) => {
+    const { data } = await apiClient.get<{name: string | null, hashtag: string | null}>(`/pools/${poolPda}/metadata`)
+    return data
+  },
+
+  getBatchPoolMetadata: async (pdas: string[]) => {
+    if (!pdas.length) return {};
+    const { data } = await apiClient.get<Record<string, {name: string | null, hashtag: string | null, video_title: string | null}>>(`/pools/batch-metadata`, {
+      params: { pdas: pdas.join(',') }
+    })
+    return data
+  },
+
+  batchEnrichTitles: async (items: { pda: string; video_id: string }[]) => {
+    if (!items.length) return { updated: 0, skipped: 0 }
+    const { data } = await apiClient.post<{ updated: number; skipped: number }>('/pools/batch-enrich-titles', items)
     return data
   },
 
@@ -95,6 +146,14 @@ export const coreApi = {
       hash_bytes: number[]
       hash_hex: string
     }>('/utils/hash-link', { url })
+    return data
+  },
+
+  getYoutubeTitles: async (videoIds: string[]): Promise<Record<string, string | null>> => {
+    if (!videoIds.length) return {}
+    const { data } = await apiClient.get<Record<string, string | null>>('/utils/youtube-titles', {
+      params: { video_ids: videoIds.join(',') },
+    })
     return data
   },
 }

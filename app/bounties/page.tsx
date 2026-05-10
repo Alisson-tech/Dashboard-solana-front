@@ -2,50 +2,124 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useConnection } from '@solana/wallet-adapter-react'
 import { MainLayout } from '@/components/layout/main-layout'
 import { formatTimeLeft, getCategoryColor } from '@/lib/mock-data'
 import { coreApi, Pool } from '@/lib/api'
 import { toast } from 'sonner'
+import { getPools, PoolStatus } from '@/lib/solana'
+import { EditorOnboardingGate } from '@/components/onboarding/EditorOnboardingGate'
 
 export default function BountiesPage() {
   const [pools, setPools] = useState<Pool[]>([])
+  const [filterStatus, setFilterStatus] = useState<string>('open')
+  const [filterDate, setFilterDate] = useState<string>('all')
+  const [searchQuery, setSearchQuery] = useState<string>('')
+  const [sortOrder, setSortOrder] = useState<string>('newest')
+  const [currentPage, setCurrentPage] = useState<number>(1)
   const [isLoading, setIsLoading] = useState(true)
+  const { connection } = useConnection()
+  
+  const itemsPerPage = 9
 
   useEffect(() => {
     const fetchPools = async () => {
+      if (!connection) return
+
       try {
-        const data = await coreApi.getPools({ status: 'OPEN' })
-        if (data.items.length > 0) {
-          setPools(data.items)
-        } else {
-          // Fallback to mock data
-          const { mockBounties } = await import('@/lib/mock-data')
-          const mockPools: Pool[] = mockBounties.map(b => ({
-            pda_address: b.id,
-            creator_wallet: 'DemoOwner',
-            original_video_id: b.hashtag,
-            prize_amount: b.prizePool * 1e9,
-            participant_count: b.totalClips,
-            status: 'OPEN',
-            expiry_timestamp: b.deadline.toISOString(),
-            total_score: 0,
-            scoring_rules: { views_weight: 50, likes_weight: 30, comments_weight: 20 }
+        const poolsFromChain = await getPools(connection)
+        
+        let metadataMap: Record<string, {name: string | null, hashtag: string | null, video_title: string | null}> = {}
+        try {
+          const pdas = poolsFromChain.map(p => p.pda_address.toBase58())
+          metadataMap = await coreApi.getBatchPoolMetadata(pdas)
+        } catch (e) {
+          console.error("Failed to fetch pool metadata", e)
+        }
+        
+        const mappedPools: Pool[] = poolsFromChain.map(p => {
+          const cleanVideoId = p.originalVideoId.replace(/\0/g, '').trim()
+          const pdaStr = p.pda_address.toBase58()
+          const meta = metadataMap[pdaStr]
+
+          return {
+            pda_address: pdaStr,
+            creator_wallet: p.creator.toBase58(),
+            original_video_id: cleanVideoId || 'Unknown',
+            name: meta?.name || meta?.video_title || undefined,
+            hashtag: meta?.hashtag || undefined,
+            prize_amount: p.prizeAmount,
+            participant_count: p.participantCount,
+            status: p.status === PoolStatus.Open ? 'OPEN' as const : p.status === PoolStatus.Distributed ? 'DISTRIBUTED' as const : 'CLOSED' as const,
+            expiry_timestamp: new Date(p.expiryTimestamp * 1000).toISOString(),
+            total_score: p.totalScore,
+            scoring_rules: { views_weight: p.scoringRules.viewsWeight, likes_weight: p.scoringRules.likesWeight, comments_weight: p.scoringRules.commentsWeight },
+          }
+        })
+        setPools(mappedPools)
+
+        // Enrich the DB in background for pools that don't have a video_title yet
+        const needsEnrich = poolsFromChain
+          .map(p => ({
+            pda: p.pda_address.toBase58(),
+            video_id: p.originalVideoId.replace(/\0/g, '').trim(),
           }))
-          setPools(mockPools)
+          .filter(item => {
+            const meta = metadataMap[item.pda]
+            return item.video_id && item.video_id !== 'Unknown' && !meta?.video_title
+          })
+        if (needsEnrich.length > 0) {
+          coreApi.batchEnrichTitles(needsEnrich).catch(e =>
+            console.error('Background title enrichment failed', e)
+          )
         }
       } catch (error) {
         console.error('Error fetching pools:', error)
-        toast.error('Failed to load bounties from API')
+        toast.error('Failed to load pools from blockchain')
+        setPools([])
       } finally {
         setIsLoading(false)
       }
     }
 
     fetchPools()
-  }, [])
+  }, [connection])
+
+  // Compute filtered & paginated pools
+  const filteredPools = pools.filter(pool => {
+    if (filterStatus === 'all') return true
+    if (filterStatus === 'open') return pool.status === 'OPEN'
+    if (filterStatus === 'closed') return pool.status === 'CLOSED' || pool.status === 'DISTRIBUTED'
+    return true
+  }).filter(pool => {
+    if (!searchQuery.trim()) return true
+    const q = searchQuery.toLowerCase()
+    const displayName = pool.name || ''
+    return displayName.toLowerCase().includes(q) || pool.hashtag?.toLowerCase().includes(q)
+  }).filter(pool => {
+    if (filterDate === 'all') return true
+    
+    const expiryDate = new Date(pool.expiry_timestamp).getTime()
+    const now = Date.now()
+    const hoursLeft = (expiryDate - now) / (1000 * 60 * 60)
+    
+    if (filterDate === '24h') return hoursLeft > 0 && Math.abs(hoursLeft) <= 24
+    if (filterDate === '7d') return hoursLeft > 0 && Math.abs(hoursLeft) <= (24 * 7)
+    if (filterDate === 'later') return hoursLeft > (24 * 7)
+    
+    return true
+  }).sort((a, b) => {
+    if (sortOrder === 'prize') return b.prize_amount - a.prize_amount
+    if (sortOrder === 'deadline') return new Date(a.expiry_timestamp).getTime() - new Date(b.expiry_timestamp).getTime()
+    return b.participant_count - a.participant_count
+  })
+  
+  const totalPages = Math.max(1, Math.ceil(filteredPools.length / itemsPerPage))
+  const paginatedPools = filteredPools.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
 
   return (
     <MainLayout showSidebar={true} showHeader={false}>
+      <EditorOnboardingGate>
       <div className="mx-auto max-w-[1440px]">
         {/* Header */}
         <div className="mb-12">
@@ -54,8 +128,8 @@ export default function BountiesPage() {
             <span className="gradient-text">Marketplace</span>
           </h1>
           <p className="max-w-2xl text-on-surface-variant">
-            Explore bounties ativos, participe como clipper e ganhe SOL
-            baseado no seu engajamento.
+            Explore active bounties, join as an editor, and earn SOL
+            based on your engagement.
           </p>
         </div>
 
@@ -65,12 +139,36 @@ export default function BountiesPage() {
             <span className="material-symbols-outlined text-on-surface-variant">
               filter_list
             </span>
-            <select className="bg-transparent text-sm text-on-surface outline-none">
-              <option value="all">All Categories</option>
-              <option value="gaming">Gaming</option>
-              <option value="social">Social</option>
-              <option value="entertainment">Entertainment</option>
-              <option value="education">Education</option>
+            <select
+              value={filterStatus}
+              onChange={(e) => {
+                setFilterStatus(e.target.value)
+                setCurrentPage(1)
+              }}
+              className="bg-transparent text-sm text-on-surface outline-none"
+            >
+              <option value="all" className="bg-[#121212]">All Status</option>
+              <option value="open" className="bg-[#121212]">Open</option>
+              <option value="closed" className="bg-[#121212]">Closed</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 rounded-xl bg-surface-container-low px-4 py-2">
+            <span className="material-symbols-outlined text-on-surface-variant">
+              schedule
+            </span>
+            <select
+              value={filterDate}
+              onChange={(e) => {
+                setFilterDate(e.target.value)
+                setCurrentPage(1)
+              }}
+              className="bg-transparent text-sm text-on-surface outline-none"
+            >
+              <option value="all" className="bg-[#121212]">All Dates</option>
+              <option value="24h" className="bg-[#121212]">Expiring in 24h</option>
+              <option value="7d" className="bg-[#121212]">Expiring in 7 Days</option>
+              <option value="later" className="bg-[#121212]">Later</option>
             </select>
           </div>
 
@@ -78,10 +176,17 @@ export default function BountiesPage() {
             <span className="material-symbols-outlined text-on-surface-variant">
               sort
             </span>
-            <select className="bg-transparent text-sm text-on-surface outline-none">
-              <option value="prize">Highest Prize</option>
-              <option value="deadline">Ending Soon</option>
-              <option value="submissions">Most Submissions</option>
+            <select 
+              value={sortOrder}
+              onChange={(e) => {
+                setSortOrder(e.target.value)
+                setCurrentPage(1)
+              }}
+              className="bg-transparent text-sm text-on-surface outline-none"
+            >
+              <option value="newest" className="bg-[#121212]">Featured / Popular</option>
+              <option value="prize" className="bg-[#121212]">Highest Prize</option>
+              <option value="deadline" className="bg-[#121212]">Ending Soon</option>
             </select>
           </div>
 
@@ -91,7 +196,12 @@ export default function BountiesPage() {
             </span>
             <input
               type="text"
-              placeholder="Search bounties..."
+              placeholder="Search bounties by name..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value)
+                setCurrentPage(1)
+              }}
               className="flex-1 bg-transparent text-sm text-on-surface placeholder:text-on-surface-variant outline-none"
             />
           </div>
@@ -100,35 +210,46 @@ export default function BountiesPage() {
         {/* Bounty Grid */}
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {isLoading ? (
-            // Skeleton Loading
             Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-[400px] animate-pulse rounded-2xl bg-surface-container-low"></div>
+              <div key={`loading-${i}`} className="h-[400px] animate-pulse rounded-2xl bg-surface-container-low"></div>
             ))
-          ) : pools.length === 0 ? (
+          ) : paginatedPools.length === 0 ? (
             <div className="col-span-full py-20 text-center">
-              <p className="text-on-surface-variant text-lg">No active bounties found in the API.</p>
+              <p className="text-on-surface-variant text-lg">No bounties found.</p>
             </div>
           ) : (
-            pools.map((pool) => {
+            paginatedPools.map((pool, index) => {
+              // Create a unique key using index to avoid duplicates
+              const uniqueKey = `${pool.pda_address}-${index}`
               const deadline = new Date(pool.expiry_timestamp)
-              const timeLeft = formatTimeLeft(deadline)
-              const isEndingSoon =
-                deadline.getTime() - Date.now() < 3 * 24 * 60 * 60 * 1000
-              const prizePool = pool.prize_amount / 1e9 // lamports to SOL
+              const prizePool = pool.prize_amount / 1e9
+              // Format explicit date e.g., 22/04/2026, 11:05
+              const formattedDate = deadline.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 
               return (
                 <Link
-                  key={pool.pda_address}
+                  key={uniqueKey}
                   href={`/bounties/${pool.pda_address}`}
                   className="group overflow-hidden rounded-2xl border border-outline-variant/10 bg-surface-container-low transition-all hover:border-primary/30 hover:shadow-xl"
                 >
-                  {/* Card Header */}
                   <div className="relative h-32 overflow-hidden bg-gradient-to-br from-primary/20 to-secondary/20">
+                    {/* Fallback icon — hidden when thumbnail loads */}
                     <div className="absolute inset-0 flex items-center justify-center">
                       <span className="material-symbols-outlined text-6xl text-on-surface/20">
                         movie
                       </span>
                     </div>
+                    {pool.original_video_id && pool.original_video_id !== 'Unknown' && (
+                      <>
+                        <img
+                          src={`https://img.youtube.com/vi/${pool.original_video_id}/hqdefault.jpg`}
+                          alt={pool.name || 'Bounty thumbnail'}
+                          className="absolute inset-0 h-full w-full object-cover"
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                        />
+                        <div className="absolute inset-0 bg-black/30" />
+                      </>
+                    )}
                     <div className="absolute left-4 top-4">
                       <span
                         className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${getCategoryColor('other')}`}
@@ -137,22 +258,31 @@ export default function BountiesPage() {
                       </span>
                     </div>
                     <div className="absolute right-4 top-4">
-                      <span
-                        className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider ${isEndingSoon ? 'bg-error/20 text-error' : 'bg-secondary/20 text-secondary'}`}
-                      >
-                        {isEndingSoon ? 'Ending Soon' : 'Active'}
-                      </span>
+                      {pool.status === 'OPEN' && (
+                        <span className="rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider bg-primary/20 text-primary">
+                          Open
+                        </span>
+                      )}
+                      {pool.status === 'CLOSED' && (
+                        <span className="rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider bg-warning/20 text-warning">
+                          ⚠️ Closed
+                        </span>
+                      )}
+                      {pool.status === 'DISTRIBUTED' && (
+                        <span className="rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider bg-error/20 text-error">
+                          End
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* Card Body */}
                   <div className="p-6">
                     <div className="mb-4">
-                      <h3 className="mb-1 text-lg font-bold text-on-surface truncate">
-                        Challenge #{pool.pda_address.slice(0, 8)}
+                      <h3 className="mb-1 text-lg font-bold text-on-surface truncate" title={pool.name || `Bounty #${pool.pda_address.slice(0, 8)}`}>
+                        {pool.name || `Bounty #${pool.pda_address.slice(0, 8)}`}
                       </h3>
                       <span className="text-sm text-secondary">
-                        Video: {pool.original_video_id}
+                        by {pool.creator_wallet.slice(0, 4)}...{pool.creator_wallet.slice(-4)}
                       </span>
                     </div>
 
@@ -188,13 +318,11 @@ export default function BountiesPage() {
                         </span>
                         {pool.participant_count} clips
                       </div>
-                      <div
-                        className={`flex items-center gap-1 ${isEndingSoon ? 'text-error' : 'text-on-surface-variant'}`}
-                      >
+                      <div className="flex items-center gap-1 text-on-surface-variant text-xs">
                         <span className="material-symbols-outlined text-sm">
                           schedule
                         </span>
-                        {timeLeft}
+                        Exp: {formattedDate}
                       </div>
                     </div>
                   </div>
@@ -203,6 +331,56 @@ export default function BountiesPage() {
             })
           )}
         </div>
+
+        {/* Pagination Controls */}
+        {!isLoading && totalPages > 1 && (
+          <div className="mt-12 flex items-center justify-center gap-2">
+            <button
+              onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+              disabled={currentPage === 1}
+              className="flex items-center justify-center rounded-xl bg-surface-container-low px-4 py-2 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <span className="material-symbols-outlined mr-1 text-sm">chevron_left</span>
+              Prev
+            </button>
+            <div className="flex items-center gap-1 mx-2">
+              {Array.from({ length: totalPages }).map((_, i) => {
+                const pageNum = i + 1;
+                // Simple logic to truncate pagination buttons if there are too many pages
+                if (totalPages > 7) {
+                  if (pageNum !== 1 && pageNum !== totalPages && Math.abs(currentPage - pageNum) > 1) {
+                    if (pageNum === 2 || pageNum === totalPages - 1) {
+                      return <span key={pageNum} className="text-on-surface-variant">...</span>
+                    }
+                    return null;
+                  }
+                }
+                
+                return (
+                  <button
+                    key={pageNum}
+                    onClick={() => setCurrentPage(pageNum)}
+                    className={`flex h-10 w-10 items-center justify-center rounded-lg text-sm font-bold transition-all ${
+                      currentPage === pageNum 
+                        ? 'bg-primary text-on-primary shadow-lg shadow-primary/20' 
+                        : 'text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface'
+                    }`}
+                  >
+                    {pageNum}
+                  </button>
+                )
+              })}
+            </div>
+            <button
+              onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+              disabled={currentPage === totalPages}
+              className="flex items-center justify-center rounded-xl bg-surface-container-low px-4 py-2 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              Next
+              <span className="material-symbols-outlined ml-1 text-sm">chevron_right</span>
+            </button>
+          </div>
+        )}
 
         {/* Stats Section */}
         <div className="mt-16 grid grid-cols-1 gap-6 md:grid-cols-4">
@@ -225,7 +403,7 @@ export default function BountiesPage() {
               942
             </div>
             <div className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
-              Active Clippers
+              Active Editors
             </div>
           </div>
           <div className="group rounded-3xl border border-outline-variant/10 bg-surface-container-low p-8 transition-colors hover:border-tertiary/30">
@@ -252,6 +430,7 @@ export default function BountiesPage() {
           </div>
         </div>
       </div>
+      </EditorOnboardingGate>
     </MainLayout>
   )
 }
