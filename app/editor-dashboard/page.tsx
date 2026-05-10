@@ -1,15 +1,14 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { useWallet } from '@solana/wallet-adapter-react'
 import { MainLayout } from '@/components/layout/main-layout'
-import { Pool, Entry } from '@/lib/api'
-import { getPools, getPoolEntries } from '@/lib/solana'
+import { Entry } from '@/lib/api'
+import { coreApi } from '@/lib/api'
 import { toast } from 'sonner'
 
 export default function EditorDashboardPage() {
   const { publicKey } = useWallet()
-  const { connection } = useConnection()
   const walletAddress = publicKey?.toBase58()
 
   const [myOpenEntries, setMyOpenEntries] = useState<Entry[]>([])
@@ -18,70 +17,41 @@ export default function EditorDashboardPage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      if (!connection || !walletAddress) {
+      if (!walletAddress) {
         setIsLoading(false)
         return
       }
 
       try {
-        // Buscar todas as pools
-        const openPools = await getPools(connection)
-        
-        // Para cada pool, buscar participantes do usuário
-        const participatingOpen: Entry[] = []
-        const participatingClosed: Entry[] = []
+        const data = await coreApi.getUserParticipations(walletAddress)
+        const entries: Entry[] = data.items
 
-        for (const pool of openPools) {
-          const entriesFromChain = await getPoolEntries(connection, pool.pda_address.toString())
-          const myEntries = entriesFromChain.filter(e => e.user.toBase58() === walletAddress)
+        const open: Entry[] = []
+        const closed: Entry[] = []
 
-          for (const entry of myEntries) {
-            // Se a pool ainda está aberta, adiciona em Open
-            // Se fechou (expired), adiciona em Closed
-            const isPoolExpired = pool.expiryTimestamp > 0 && pool.expiryTimestamp <= Math.floor(Date.now() / 1000)
-            
-            if (isPoolExpired) {
-              participatingClosed.push({
-                pda_address: entry.pool.toBase58(),
-                pool_pda: entry.pool.toBase58(),
-                user_wallet: entry.user.toBase58(),
-                channel_id: entry.channelId,
-                clip_link: entry.clipLink,
-                views: entry.views,
-                likes: entry.likes,
-                comments: entry.comments,
-                score: entry.score,
-                claimed: entry.claimed,
-              })
-            } else {
-              participatingOpen.push({
-                pda_address: entry.pool.toBase58(),
-                pool_pda: entry.pool.toBase58(),
-                user_wallet: entry.user.toBase58(),
-                channel_id: entry.channelId,
-                clip_link: entry.clipLink,
-                views: entry.views,
-                likes: entry.likes,
-                comments: entry.comments,
-                score: entry.score,
-                claimed: entry.claimed,
-              })
-            }
+        for (const entry of entries) {
+          const poolStatus = (entry as any).pool_status
+          const isDistributed = poolStatus === 'DISTRIBUTED'
+          if (isDistributed) {
+            closed.push(entry)
+          } else {
+            open.push(entry)
           }
         }
 
-        setMyOpenEntries(participatingOpen)
-        setMyClosedEntries(participatingClosed)
+        setMyOpenEntries(open)
+        setMyClosedEntries(closed)
       } catch (err) {
         console.error('Failed to load editor data', err)
-        toast.error('Failed to load data from blockchain')
       } finally {
         setIsLoading(false)
       }
     }
 
     fetchData()
-  }, [walletAddress, connection, publicKey])
+    const interval = setInterval(fetchData, 30000)
+    return () => clearInterval(interval)
+  }, [walletAddress])
 
   const handleClaim = async (entry: Entry) => {
     toast.info('Claim functionality coming soon!')
@@ -107,7 +77,6 @@ export default function EditorDashboardPage() {
 
   return (
     <MainLayout>
-      {/* Header */}
       <div className="mb-12">
         <h1 className="mb-2 font-headline text-4xl font-bold tracking-tight text-on-surface md:text-5xl">
           Editor <span className="gradient-text">Dashboard</span>
@@ -117,7 +86,6 @@ export default function EditorDashboardPage() {
         </p>
       </div>
 
-      {/* Stats */}
       <div className="mb-12 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-low p-6">
           <div className="flex items-center gap-3 mb-2">
@@ -135,9 +103,7 @@ export default function EditorDashboardPage() {
         </div>
       </div>
 
-      {/* My Submissions */}
       <div className="space-y-8">
-        {/* My Open Submissions */}
         <div>
           <h2 className="mb-4 flex items-center gap-2 font-headline text-xl font-bold text-on-surface">
             <span className="h-5 w-2 rounded-full bg-secondary"></span>
@@ -152,13 +118,13 @@ export default function EditorDashboardPage() {
             </div>
           ) : myOpenEntries.length === 0 ? (
             <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-6 text-center">
-              <p className="text-sm text-on-surface-variant">You haven't submitted to any open pools yet.</p>
+              <p className="text-sm text-on-surface-variant">You haven&apos;t submitted to any open pools yet.</p>
               <p className="mt-1 text-xs text-on-surface-variant">Browse the marketplace to find pools!</p>
             </div>
           ) : (
             <div className="space-y-3">
               {myOpenEntries.map((entry) => (
-                <div key={entry.pda_address + entry.clip_link} className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
+                <div key={entry.pda_address} className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-on-surface">#{entry.pool_pda.slice(0, 8)}...</span>
                     <span className="text-xs text-secondary font-bold">{entry.score} pts</span>
@@ -174,7 +140,6 @@ export default function EditorDashboardPage() {
           )}
         </div>
 
-        {/* My Closed Submissions (Claimable) */}
         <div>
           <h2 className="mb-4 flex items-center gap-2 font-headline text-xl font-bold text-on-surface">
             <span className="h-5 w-2 rounded-full bg-tertiary"></span>
@@ -194,7 +159,7 @@ export default function EditorDashboardPage() {
           ) : (
             <div className="space-y-3">
               {myClosedEntries.map((entry) => (
-                <div key={entry.pda_address + entry.clip_link} className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
+                <div key={entry.pda_address} className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-on-surface">#{entry.pool_pda.slice(0, 8)}...</span>
                     <div className="flex items-center gap-2">

@@ -13,7 +13,6 @@ import { MainLayout } from '@/components/layout/main-layout'
 import { LeaderboardTable } from '@/components/bounty/leaderboard-table'
 import { coreApi, Pool } from '@/lib/api'
 import { getProgram, PROGRAM_ID } from '@/lib/anchor/program'
-import { getPools, PoolStatus } from '@/lib/solana'
 import { EditorOnboardingGate } from '@/components/onboarding/EditorOnboardingGate'
 import { PublicKey } from '@solana/web3.js'
 import * as anchor from '@coral-xyz/anchor'
@@ -107,38 +106,14 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
 
   useEffect(() => {
     const fetchPool = async () => {
-      if (!connection) {
+      if (!poolPda) {
         setIsLoading(false)
         return
       }
 
       try {
-        // Fetch from blockchain
-        const allPools = await getPools(connection)
-        
-        // Find the specific pool by pda_address
-        const foundPool = allPools.find(p => p.pda_address.toBase58() === poolPda)
-        
-        if (foundPool) {
-          setPool({
-            pda_address: foundPool.pda_address.toBase58(),
-            creator_wallet: foundPool.creator.toBase58(),
-            original_video_id: foundPool.originalVideoId,
-            prize_amount: foundPool.prizeAmount,
-            participant_count: foundPool.participantCount,
-            status: 'OPEN' as const,
-            expiry_timestamp: new Date(foundPool.expiryTimestamp * 1000).toISOString(),
-            total_score: foundPool.totalScore,
-            scoring_rules: { 
-              views_weight: foundPool.scoringRules.viewsWeight, 
-              likes_weight: foundPool.scoringRules.likesWeight, 
-              comments_weight: foundPool.scoringRules.commentsWeight 
-            }
-          })
-        } else {
-          // Pool not found or expired - try to get from all accounts directly
-          console.log('Pool not found in filtered list, trying to get from chain directly')
-        }
+        const data = await coreApi.getPool(poolPda)
+        setPool(data)
       } catch (error) {
         console.error('Error fetching pool details:', error)
       } finally {
@@ -149,7 +124,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
     fetchPool()
     const interval = setInterval(fetchPool, 30000)
     return () => clearInterval(interval)
-  }, [poolPda, connection])
+  }, [poolPda])
 
   const handleSubmit = async () => {
     if (!submitUrl.trim() || !pool) {
