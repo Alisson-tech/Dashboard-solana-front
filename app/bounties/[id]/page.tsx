@@ -147,6 +147,8 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
     }
 
     fetchPool()
+    const interval = setInterval(fetchPool, 30000)
+    return () => clearInterval(interval)
   }, [poolPda, connection])
 
   const handleSubmit = async () => {
@@ -272,24 +274,43 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
 
       tx.add(joinIx)
 
-      const latestBlockhash = await connection.getLatestBlockhash()
-      tx.recentBlockhash = latestBlockhash.blockhash
-      tx.feePayer = publicKey
+      const MAX_RETRIES = 3
+      let txid: string | null = null
 
-      const signedTx = await anchorWallet.signTransaction(tx)
-      const txid = await connection.sendRawTransaction(signedTx.serialize())
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const latestBlockhash = await connection.getLatestBlockhash()
+        tx.recentBlockhash = latestBlockhash.blockhash
+        tx.feePayer = publicKey
 
-      const confirmPromise = connection.confirmTransaction({
-        signature: txid,
-        blockhash: latestBlockhash.blockhash,
-        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-      }, 'confirmed')
+        const signedTx = await anchorWallet.signTransaction(tx)
+        txid = await connection.sendRawTransaction(signedTx.serialize())
 
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Transaction not confirmed within 5 minutes')), 300_000)
-      )
+        try {
+          const confirmPromise = connection.confirmTransaction({
+            signature: txid,
+            blockhash: latestBlockhash.blockhash,
+            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+          }, 'confirmed')
 
-      await Promise.race([confirmPromise, timeout])
+          const timeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Transaction not confirmed within 5 minutes')), 300_000)
+          )
+
+          await Promise.race([confirmPromise, timeout])
+          break
+        } catch (confirmError: any) {
+          const isBlockHeightExceeded = confirmError?.message?.includes?.('block height exceeded')
+              || confirmError?.name === 'TransactionExpiredBlockheightExceededError'
+
+          if (isBlockHeightExceeded && attempt < MAX_RETRIES - 1) {
+            console.log(`Blockhash expired on attempt ${attempt + 1}, retrying with fresh blockhash...`)
+            continue
+          }
+          throw confirmError
+        }
+      }
+
+      if (!txid) throw new Error('Failed to send transaction')
 
       console.log('Submission success! TX:', txid)
       toast.success('Clip submitted successfully! Waiting for AI Oracle...', { id: 'submit_toast' })
@@ -297,8 +318,19 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       setSubmitUrl('')
     } catch (error: any) {
       console.error('Error submitting clip:', error)
-      setSubmitError('Failed to submit: ' + (error.message || 'Unknown error'))
-      toast.error('Submission failed')
+
+      const logs = error?.logs || error?.transactionLogs || []
+      const alreadySubmitted = Array.isArray(logs) && logs.some((l: string) =>
+        l.includes('already in use')
+      )
+
+      if (alreadySubmitted) {
+        setSubmitError('This video has already been submitted to this pool')
+        toast.error('Duplicate submission')
+      } else {
+        setSubmitError('Failed to submit: ' + (error.message || 'Unknown error'))
+        toast.error('Submission failed')
+      }
     } finally {
       setIsSubmitting(false)
     }

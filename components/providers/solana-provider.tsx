@@ -32,7 +32,7 @@ export function SolanaProvider({ children }: SolanaProviderProps) {
   )
 
   return (
-    <ConnectionProvider endpoint={endpoint}>
+    <ConnectionProvider endpoint={endpoint} config={{ confirmTransactionInitialTimeout: 300_000 }}>
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           <AuthProvider>

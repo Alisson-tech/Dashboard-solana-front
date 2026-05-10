@@ -37,6 +37,8 @@ export function LeaderboardTable({
     }
 
     fetchEntries()
+    const interval = setInterval(fetchEntries, 30000)
+    return () => clearInterval(interval)
   }, [poolPda])
 
   return (
