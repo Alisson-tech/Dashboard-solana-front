@@ -18,6 +18,7 @@ import { EditorOnboardingGate } from '@/components/onboarding/EditorOnboardingGa
 import { PublicKey } from '@solana/web3.js'
 import * as anchor from '@coral-xyz/anchor'
 import { toast } from 'sonner'
+import { getYouTubeChannelId } from '@/lib/youtube'
 
 async function sha256(message: string) {
   const msgBuffer = new TextEncoder().encode(message);
@@ -159,9 +160,8 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       return
     }
 
-    const urlPattern = /^https?:\/\/(www\.)?(tiktok\.com|instagram\.com|youtube\.com|youtu\.be)/i
-    if (!urlPattern.test(submitUrl)) {
-      setSubmitError('Please enter a valid TikTok, Instagram, or YouTube URL')
+    if (!submitUrl.match(/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)/i)) {
+      setSubmitError('Please enter a valid YouTube URL')
       return
     }
 
@@ -169,6 +169,13 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
     setSubmitError('')
 
     try {
+      const extractedChannelId = await getYouTubeChannelId(submitUrl)
+      if (!extractedChannelId) {
+        setSubmitError('Could not verify the channel from this video URL')
+        setIsSubmitting(false)
+        return
+      }
+
       const anchorWallet = {
         publicKey,
         signTransaction: async (tx: any) => {
@@ -196,7 +203,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       )
 
       const [stakeAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('stake_account'), publicKey.toBuffer()],
+        [Buffer.from('stake'), publicKey.toBuffer()],
         PROGRAM_ID
       )
 
@@ -208,17 +215,31 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       toast.info("Preparing transaction...", { id: 'submit_toast' })
       const tx = new anchor.web3.Transaction()
 
+      let channelId = extractedChannelId
+
       try {
         const userExists = await connection.getAccountInfo(userProfilePda)
         if (!userExists) {
             console.log("Adding initializeUser instruction")
-            const initIx = await program.methods.initializeUser(["UC_Placeholder"]).accounts({
+            const initIx = await program.methods.initializeUser([extractedChannelId]).accounts({
                 userProfile: userProfilePda,
                 config: configPda,
                 authority: publicKey,
                 systemProgram: anchor.web3.SystemProgram.programId,
             } as any).instruction()
             tx.add(initIx)
+        } else {
+            const rawProfile: any = await (program.account as any).userProfile.fetch(userProfilePda)
+            const registeredChannels: string[] = rawProfile?.channelIds ?? []
+            const match = registeredChannels.find(c => c === extractedChannelId)
+            if (!match) {
+                const msg = `Channel "${extractedChannelId}" is not registered. ` +
+                    `Registered channels: ${registeredChannels.join(', ') || 'none'}`
+                setSubmitError(msg)
+                setIsSubmitting(false)
+                return
+            }
+            channelId = match
         }
 
         const stakeExists = await connection.getAccountInfo(stakeAccountPda)
@@ -237,7 +258,7 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
       }
 
       const joinIx = await program.methods
-        .joinPool(Array.from(linkHash), submitUrl, "CHANNEL_ID")
+        .joinPool(Array.from(linkHash), submitUrl, channelId)
         .accounts({
           entry: entryPda,
           pool: new PublicKey(poolPda),
@@ -257,7 +278,18 @@ export default function BountyDetailPage({ params }: BountyDetailPageProps) {
 
       const signedTx = await anchorWallet.signTransaction(tx)
       const txid = await connection.sendRawTransaction(signedTx.serialize())
-      await connection.confirmTransaction(txid)
+
+      const confirmPromise = connection.confirmTransaction({
+        signature: txid,
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      }, 'confirmed')
+
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Transaction not confirmed within 5 minutes')), 300_000)
+      )
+
+      await Promise.race([confirmPromise, timeout])
 
       console.log('Submission success! TX:', txid)
       toast.success('Clip submitted successfully! Waiting for AI Oracle...', { id: 'submit_toast' })
