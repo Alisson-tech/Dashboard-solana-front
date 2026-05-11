@@ -150,6 +150,12 @@ export function getParticipantEntryPDA(pool: PublicKey | string, clipLink: strin
   return PublicKey.findProgramAddressSync([encodeUTF8('entry'), poolKey.toBytes(), linkHash], PROGRAM_PUBKEY)[0]
 }
 
+export async function sha256(message: string): Promise<Uint8Array> {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await window.crypto.subtle.digest('SHA-256', msgBuffer);
+  return new Uint8Array(hashBuffer);
+}
+
 export function getLinkHash(clipLink: string): Uint8Array {
   return sha256sync(clipLink)
 }

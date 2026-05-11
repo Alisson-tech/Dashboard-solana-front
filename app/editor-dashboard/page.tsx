@@ -1,19 +1,25 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useWallet } from '@solana/wallet-adapter-react'
+import { useState, useEffect, useRef } from 'react'
+import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { MainLayout } from '@/components/layout/main-layout'
 import { Entry } from '@/lib/api'
 import { coreApi } from '@/lib/api'
 import { toast } from 'sonner'
+import { getProgram } from '@/lib/anchor/program'
+import { sha256, getPrizeVaultPDA, getUserProfilePDA, getStakeAccountPDA, getGlobalConfigPDA } from '@/lib/solana'
+import { PublicKey } from '@solana/web3.js'
+import * as anchor from '@coral-xyz/anchor'
 
 export default function EditorDashboardPage() {
-  const { publicKey } = useWallet()
+  const { publicKey, signTransaction } = useWallet()
+  const { connection } = useConnection()
   const walletAddress = publicKey?.toBase58()
 
   const [myOpenEntries, setMyOpenEntries] = useState<Entry[]>([])
   const [myExpiredEntries, setMyExpiredEntries] = useState<Entry[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const claimedLocally = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     const fetchData = async () => {
@@ -39,8 +45,12 @@ export default function EditorDashboardPage() {
           }
         }
 
-        setMyOpenEntries(open)
-        setMyExpiredEntries(expired)
+        setMyOpenEntries(open.map(e =>
+          claimedLocally.current.has(e.pda_address) ? { ...e, claimed: true } : e
+        ))
+        setMyExpiredEntries(expired.map(e =>
+          claimedLocally.current.has(e.pda_address) ? { ...e, claimed: true } : e
+        ))
       } catch (err) {
         console.error('Failed to load editor data', err)
       } finally {
@@ -54,7 +64,122 @@ export default function EditorDashboardPage() {
   }, [walletAddress])
 
   const handleClaim = async (entry: Entry) => {
-    toast.info('Claim functionality coming soon!')
+    if (!publicKey || !connection || !signTransaction) {
+      toast.error('Wallet not connected')
+      return
+    }
+
+    try {
+      toast.loading('Claiming prize...', { id: 'claim_toast' })
+
+      const linkHash = await sha256(entry.clip_link)
+
+      const anchorWallet = {
+        publicKey,
+        signTransaction: async (tx: any) => {
+          if (!signTransaction) throw new Error('Wallet does not support signTransaction')
+          return signTransaction(tx)
+        },
+        signAllTransactions: async (txs: any[]) => {
+          for (const tx of txs) {
+            if (!signTransaction) throw new Error('Wallet does not support signTransaction')
+            await signTransaction(tx)
+          }
+          return txs
+        },
+      }
+
+      const program = getProgram(connection, anchorWallet)
+      const poolPda = new PublicKey(entry.pool_pda)
+      const entryPda = new PublicKey(entry.pda_address)
+      const prizeVaultPda = getPrizeVaultPDA(poolPda)
+      const userProfilePda = getUserProfilePDA(publicKey)
+      const stakeAccountPda = getStakeAccountPDA(publicKey)
+      const configPda = getGlobalConfigPDA()
+
+      const ix = await program.methods
+        .claimPrize(Array.from(linkHash))
+        .accounts({
+          pool: poolPda,
+          prizeVault: prizeVaultPda,
+          entry: entryPda,
+          userProfile: userProfilePda,
+          stakeAccount: stakeAccountPda,
+          config: configPda,
+          authority: publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
+        .instruction()
+
+      const tx = new anchor.web3.Transaction().add(ix)
+      const MAX_RETRIES = 3
+      let txid: string | null = null
+
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const latestBlockhash = await connection.getLatestBlockhash({ commitment: 'processed' })
+        tx.recentBlockhash = latestBlockhash.blockhash
+        tx.feePayer = publicKey
+
+        try {
+          const signed = await signTransaction(tx)
+          txid = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true })
+        } catch (sendError: any) {
+          const isBlockhash = sendError?.message?.includes?.('Blockhash')
+          if (isBlockhash && attempt < MAX_RETRIES - 1) {
+            console.log(`Blockhash expired on send attempt ${attempt + 1}, retrying...`)
+            continue
+          }
+          throw sendError
+        }
+
+        try {
+          await connection.confirmTransaction({
+            signature: txid,
+            blockhash: latestBlockhash.blockhash,
+            lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+          }, 'confirmed')
+          break
+        } catch (confirmError: any) {
+          const isBlockHeightExceeded = confirmError?.message?.includes?.('block height exceeded')
+            || confirmError?.name === 'TransactionExpiredBlockheightExceededError'
+
+          if (isBlockHeightExceeded && attempt < MAX_RETRIES - 1) {
+            console.log(`Blockhash expired on confirm attempt ${attempt + 1}, retrying...`)
+            continue
+          }
+
+          let txLanded = false
+          for (let i = 0; i < 6; i++) {
+            await new Promise(r => setTimeout(r, 2000))
+            const txInfo = await connection.getTransaction(txid!, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+            if (txInfo) { txLanded = true; break }
+          }
+          if (!txLanded) throw confirmError
+          break
+        }
+      }
+
+      toast.success('Prize claimed successfully!', { id: 'claim_toast' })
+
+      claimedLocally.current.add(entry.pda_address)
+      setMyExpiredEntries(prev => prev.map(e =>
+        e.pda_address === entry.pda_address ? { ...e, claimed: true } : e
+      ))
+    } catch (error: any) {
+      console.error('Claim error:', error)
+      const errMsg = error?.message || 'Unknown error'
+      if (errMsg.includes('PoolNotDistributed') || errMsg.includes('6029')) {
+        toast.error('Pool has not been distributed yet', { id: 'claim_toast' })
+      } else if (errMsg.includes('ClaimAlreadyMade') || errMsg.includes('6028')) {
+        toast.error('You already claimed this prize', { id: 'claim_toast' })
+      } else if (errMsg.includes('UserBanned') || errMsg.includes('6001')) {
+        toast.error('Your account has been banned', { id: 'claim_toast' })
+      } else if (errMsg.includes('ParticipantInsufficientStake') || errMsg.includes('6023')) {
+        toast.error('Insufficient stake to claim prize. You need at least 0.15 SOL staked.', { id: 'claim_toast' })
+      } else {
+        toast.error('Claim failed: ' + errMsg, { id: 'claim_toast' })
+      }
+    }
   }
 
   if (!walletAddress) {
