@@ -93,6 +93,24 @@ export const coreApi = {
     return data
   },
 
+  syncPool: async (data: {
+    pda_address: string
+    creator_wallet: string
+    original_video_id: string
+    name?: string
+    hashtag?: string
+    video_title?: string
+    prize_amount: number
+    scoring_rules: { views_weight: number; likes_weight: number; comments_weight: number }
+    participant_count: number
+    total_score: number
+    status: string
+    expiry_timestamp: string
+  }) => {
+    const { data: res } = await apiClient.post('/pools/sync', data)
+    return res
+  },
+
   updatePoolMetadata: async (poolPda: string, name: string, hashtag?: string, videoTitle?: string) => {
     const { data } = await apiClient.post(`/pools/${poolPda}/metadata`, { name, hashtag, video_title: videoTitle })
     return data

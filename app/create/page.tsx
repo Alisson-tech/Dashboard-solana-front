@@ -423,11 +423,28 @@ export default function CreateBountyPage() {
       console.log('Transaction sent, signature:', sig)
       
       try {
-        console.log('Saving metadata off-chain to core-api...')
-        await coreApi.updatePoolMetadata(poolPda.toBase58(), formData.name, formData.hashtag, videoTitle)
-        console.log('Metadata saved successfully!')
-      } catch (metaErr) {
-        console.error('Core API metadata write failed:', metaErr)
+        console.log('Syncing pool data to core-api...')
+        await coreApi.syncPool({
+          pda_address: poolPda.toBase58(),
+          creator_wallet: publicKey!.toBase58(),
+          original_video_id: originalVideoId,
+          name: formData.name,
+          hashtag: formData.hashtag,
+          video_title: videoTitle,
+          prize_amount: prizeAmount.toNumber(),
+          scoring_rules: {
+            views_weight: scoringRules.viewsWeight,
+            likes_weight: scoringRules.likesWeight,
+            comments_weight: scoringRules.commentsWeight,
+          },
+          participant_count: 0,
+          total_score: 0,
+          status: 'OPEN',
+          expiry_timestamp: new Date(deadlineTimestamp * 1000).toISOString(),
+        })
+        console.log('Pool synced to core-api successfully!')
+      } catch (syncErr) {
+        console.error('Failed to sync pool to core-api:', syncErr)
       }
       
       toast.success('Bounty created! Signature: ' + sig)
