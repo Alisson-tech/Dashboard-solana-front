@@ -8,6 +8,7 @@ import { formatTimeLeft, getCategoryColor } from '@/lib/mock-data'
 import { coreApi, Pool } from '@/lib/api'
 import { toast } from 'sonner'
 import { getPools, PoolStatus } from '@/lib/solana'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EditorOnboardingGate } from '@/components/onboarding/EditorOnboardingGate'
 
 export default function BountiesPage() {
@@ -27,7 +28,7 @@ export default function BountiesPage() {
       if (!connection) return
 
       try {
-        const poolsFromChain = await getPools(connection)
+        const poolsFromChain = await getPools(connection, { includeClosed: true })
         
         let metadataMap: Record<string, {name: string | null, hashtag: string | null, video_title: string | null}> = {}
         try {
@@ -87,7 +88,6 @@ export default function BountiesPage() {
 
   // Compute filtered & paginated pools
   const filteredPools = pools.filter(pool => {
-    if (filterStatus === 'all') return true
     if (filterStatus === 'open') return pool.status === 'OPEN'
     if (filterStatus === 'closed') return pool.status === 'CLOSED' || pool.status === 'DISTRIBUTED'
     return true
@@ -135,23 +135,12 @@ export default function BountiesPage() {
 
         {/* Filters */}
         <div className="mb-8 flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2 rounded-xl bg-surface-container-low px-4 py-2">
-            <span className="material-symbols-outlined text-on-surface-variant">
-              filter_list
-            </span>
-            <select
-              value={filterStatus}
-              onChange={(e) => {
-                setFilterStatus(e.target.value)
-                setCurrentPage(1)
-              }}
-              className="bg-transparent text-sm text-on-surface outline-none"
-            >
-              <option value="all" className="bg-[#121212]">All Status</option>
-              <option value="open" className="bg-[#121212]">Open</option>
-              <option value="closed" className="bg-[#121212]">Closed</option>
-            </select>
-          </div>
+          <Tabs value={filterStatus} onValueChange={(v) => { setFilterStatus(v); setCurrentPage(1) }}>
+            <TabsList className="bg-surface-container-low">
+              <TabsTrigger value="open">Open</TabsTrigger>
+              <TabsTrigger value="closed">Closed</TabsTrigger>
+            </TabsList>
+          </Tabs>
 
           <div className="flex items-center gap-2 rounded-xl bg-surface-container-low px-4 py-2">
             <span className="material-symbols-outlined text-on-surface-variant">
@@ -215,7 +204,9 @@ export default function BountiesPage() {
             ))
           ) : paginatedPools.length === 0 ? (
             <div className="col-span-full py-20 text-center">
-              <p className="text-on-surface-variant text-lg">No bounties found.</p>
+              <p className="text-on-surface-variant text-lg">
+                {filterStatus === 'open' ? "No open bounties available right now." : "No closed bounties yet."}
+              </p>
             </div>
           ) : (
             paginatedPools.map((pool, index) => {
@@ -265,12 +256,12 @@ export default function BountiesPage() {
                       )}
                       {pool.status === 'CLOSED' && (
                         <span className="rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider bg-warning/20 text-warning">
-                          ⚠️ Closed
+                          Closed
                         </span>
                       )}
                       {pool.status === 'DISTRIBUTED' && (
-                        <span className="rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider bg-error/20 text-error">
-                          End
+                        <span className="rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider bg-on-surface/10 text-on-surface-variant">
+                          Distributed
                         </span>
                       )}
                     </div>
@@ -422,7 +413,7 @@ export default function BountiesPage() {
               stadium
             </span>
             <div className="mb-1 font-headline text-4xl font-bold text-on-surface">
-              {pools.length}
+              {pools.filter(p => p.status === 'OPEN').length}
             </div>
             <div className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">
               Active Bounties
