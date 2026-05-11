@@ -160,12 +160,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const tx = new Transaction().add(ix)
       tx.feePayer = authority
-      const { blockhash } = await connection.getLatestBlockhash()
-      tx.recentBlockhash = blockhash
 
-      const signedTx = await signTransaction(tx)
-      
-      await connection.sendRawTransaction(signedTx.serialize())
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { blockhash } = await connection.getLatestBlockhash('finalized')
+        tx.recentBlockhash = blockhash
+
+        const signedTx = await signTransaction(tx)
+
+        try {
+          await connection.sendRawTransaction(signedTx.serialize(), { skipPreflight: true, maxRetries: 5 })
+          break
+        } catch (sendErr: any) {
+          const msg = (sendErr?.message || sendErr?.toString() || '').toLowerCase()
+          if (msg.includes('blockhash not found') && attempt < 4) {
+            console.warn(`Blockhash expired during onboard, retrying (${attempt + 1}/5)...`)
+            continue
+          }
+          throw sendErr
+        }
+      }
 
       setRole(selectedRole)
       setIsOnboarded(true)

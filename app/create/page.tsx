@@ -378,31 +378,45 @@ export default function CreateBountyPage() {
         .instruction()
 
       const tx = new anchor.web3.Transaction().add(ix)
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed')
-      tx.recentBlockhash = blockhash
       tx.feePayer = publicKey!
 
-      if (!signTransaction) throw new Error('Wallet does not support signTransaction')
-      const signed = await signTransaction(tx)
-      const rawTx = signed.serialize()
-      const sig = await connection.sendRawTransaction(rawTx)
-      
+      let sig: string | null = null
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('finalized')
+        tx.recentBlockhash = blockhash
+
+        if (!signTransaction) throw new Error('Wallet does not support signTransaction')
+        const signed = await signTransaction(tx)
+        const rawTx = signed.serialize()
+
+        try {
+          sig = await connection.sendRawTransaction(rawTx, { skipPreflight: true, maxRetries: 5 })
+          break
+        } catch (sendErr: any) {
+          const msg = (sendErr?.message || sendErr?.toString() || '').toLowerCase()
+          if (msg.includes('blockhash not found') && attempt < 4) {
+            console.warn(`Blockhash expired, retrying (${attempt + 1}/5)...`)
+            continue
+          }
+          throw sendErr
+        }
+      }
+
       try {
-        await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed')
+        await connection.confirmTransaction({ signature: sig!, blockhash: tx.recentBlockhash!, lastValidBlockHeight: tx.lastValidBlockHeight! }, 'confirmed')
       } catch (confirmError) {
-        console.warn('WS confirm fail, trying HTTP poll fallback...', confirmError)
-        // Fallback: poll HTTP because Devnet WebSockets often fail
-        let txLanded = false;
-        for (let i = 0; i < 6; i++) {
-          await new Promise(r => setTimeout(r, 2000));
-          const txInfo = await connection.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+        console.warn('WS confirm fail, polling HTTP por 5 min...', confirmError)
+        let txLanded = false
+        for (let i = 0; i < 60; i++) {
+          await new Promise(r => setTimeout(r, 5000))
+          const txInfo = await connection.getTransaction(sig!, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
           if (txInfo) {
-            txLanded = true;
-            break;
+            txLanded = true
+            break
           }
         }
         if (!txLanded) {
-          throw confirmError;
+          throw confirmError
         }
       }
 
