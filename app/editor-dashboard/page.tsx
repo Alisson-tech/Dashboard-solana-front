@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { MainLayout } from '@/components/layout/main-layout'
 import { Entry } from '@/lib/api'
@@ -11,6 +11,25 @@ import { sha256, getPrizeVaultPDA, getUserProfilePDA, getStakeAccountPDA, getGlo
 import { PublicKey } from '@solana/web3.js'
 import * as anchor from '@coral-xyz/anchor'
 
+const CLAIMED_STORAGE_KEY = 'solcuts_claimed_entries'
+
+function getClaimedSet(): Set<string> {
+  try {
+    const raw = localStorage.getItem(CLAIMED_STORAGE_KEY)
+    return new Set<string>(raw ? JSON.parse(raw) : [])
+  } catch {
+    return new Set<string>()
+  }
+}
+
+function addClaimedEntry(pda: string) {
+  try {
+    const set = getClaimedSet()
+    set.add(pda)
+    localStorage.setItem(CLAIMED_STORAGE_KEY, JSON.stringify([...set]))
+  } catch {}
+}
+
 export default function EditorDashboardPage() {
   const { publicKey, signTransaction } = useWallet()
   const { connection } = useConnection()
@@ -19,7 +38,6 @@ export default function EditorDashboardPage() {
   const [myOpenEntries, setMyOpenEntries] = useState<Entry[]>([])
   const [myExpiredEntries, setMyExpiredEntries] = useState<Entry[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const claimedLocally = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     const fetchData = async () => {
@@ -45,11 +63,12 @@ export default function EditorDashboardPage() {
           }
         }
 
+        const claimed = getClaimedSet()
         setMyOpenEntries(open.map(e =>
-          claimedLocally.current.has(e.pda_address) ? { ...e, claimed: true } : e
+          claimed.has(e.pda_address) ? { ...e, claimed: true } : e
         ))
         setMyExpiredEntries(expired.map(e =>
-          claimedLocally.current.has(e.pda_address) ? { ...e, claimed: true } : e
+          claimed.has(e.pda_address) ? { ...e, claimed: true } : e
         ))
       } catch (err) {
         console.error('Failed to load editor data', err)
@@ -161,7 +180,7 @@ export default function EditorDashboardPage() {
 
       toast.success('Prize claimed successfully!', { id: 'claim_toast' })
 
-      claimedLocally.current.add(entry.pda_address)
+      addClaimedEntry(entry.pda_address)
       setMyExpiredEntries(prev => prev.map(e =>
         e.pda_address === entry.pda_address ? { ...e, claimed: true } : e
       ))
