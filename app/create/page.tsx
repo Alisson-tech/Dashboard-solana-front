@@ -36,6 +36,7 @@ export default function CreateBountyPage() {
   })
   const [fieldErrors, setFieldErrors] = useState<{ videoUrl?: string; deadline?: string }>({})
   const [isCheckingVideo, setIsCheckingVideo] = useState(false)
+  const [videoTitle, setVideoTitle] = useState<string>('')
 
   useEffect(() => {
     const fetchTreasury = async () => {
@@ -109,8 +110,18 @@ export default function CreateBountyPage() {
           ...prev,
           videoUrl: 'A bounty for this video already exists. Please use a different video.',
         }))
+        setVideoTitle('')
       } else {
         setFieldErrors((prev) => ({ ...prev, videoUrl: undefined }))
+        try {
+          const res = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`)
+          if (res.ok) {
+            const data = await res.json()
+            setVideoTitle(data.title || '')
+          }
+        } catch {
+          // oEmbed failure is non-critical
+        }
       }
     } catch {
       // silently ignore RPC errors during pre-check
@@ -399,7 +410,7 @@ export default function CreateBountyPage() {
       
       try {
         console.log('Saving metadata off-chain to core-api...')
-        await coreApi.updatePoolMetadata(poolPda.toBase58(), formData.name, formData.hashtag)
+        await coreApi.updatePoolMetadata(poolPda.toBase58(), formData.name, formData.hashtag, videoTitle)
         console.log('Metadata saved successfully!')
       } catch (metaErr) {
         console.error('Core API metadata write failed:', metaErr)
@@ -665,6 +676,12 @@ export default function CreateBountyPage() {
                     <p className="text-[10px] italic text-on-surface-variant">
                       Editors will use this specific source to generate clips.
                     </p>
+                  )}
+                  {videoTitle && (
+                    <div className="flex items-center gap-1.5 pt-1 text-xs text-on-surface-variant">
+                      <span className="material-symbols-outlined text-sm">play_circle</span>
+                      <span className="truncate max-w-md">{videoTitle}</span>
+                    </div>
                   )}
                 </div>
               </div>

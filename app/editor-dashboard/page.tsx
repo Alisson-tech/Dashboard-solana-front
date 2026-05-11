@@ -12,7 +12,7 @@ export default function EditorDashboardPage() {
   const walletAddress = publicKey?.toBase58()
 
   const [myOpenEntries, setMyOpenEntries] = useState<Entry[]>([])
-  const [myClosedEntries, setMyClosedEntries] = useState<Entry[]>([])
+  const [myExpiredEntries, setMyExpiredEntries] = useState<Entry[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
@@ -27,20 +27,20 @@ export default function EditorDashboardPage() {
         const entries: Entry[] = data.items
 
         const open: Entry[] = []
-        const closed: Entry[] = []
+        const expired: Entry[] = []
 
         for (const entry of entries) {
-          const poolStatus = (entry as any).pool_status
-          const isDistributed = poolStatus === 'DISTRIBUTED'
-          if (isDistributed) {
-            closed.push(entry)
+          const poolExpiry = (entry as any).pool_expiry_timestamp
+          const isExpired = poolExpiry && new Date(poolExpiry) < new Date()
+          if (isExpired) {
+            expired.push(entry)
           } else {
             open.push(entry)
           }
         }
 
         setMyOpenEntries(open)
-        setMyClosedEntries(closed)
+        setMyExpiredEntries(expired)
       } catch (err) {
         console.error('Failed to load editor data', err)
       } finally {
@@ -99,7 +99,7 @@ export default function EditorDashboardPage() {
             <span className="material-symbols-outlined text-tertiary">emoji_events</span>
             <span className="text-xs font-bold uppercase tracking-widest text-on-surface-variant">Claimable</span>
           </div>
-          <p className="font-headline text-3xl font-bold text-on-surface">{myClosedEntries.filter(e => !e.claimed).length}</p>
+          <p className="font-headline text-3xl font-bold text-on-surface">{myExpiredEntries.filter(e => !e.claimed).length}</p>
         </div>
       </div>
 
@@ -126,8 +126,8 @@ export default function EditorDashboardPage() {
               {myOpenEntries.map((entry) => (
                 <div key={entry.pda_address} className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-on-surface">#{entry.pool_pda.slice(0, 8)}...</span>
-                    <span className="text-xs text-secondary font-bold">{entry.score} pts</span>
+                    <span className="text-sm font-medium text-on-surface">{(entry as any).pool_video_title || `#${entry.pool_pda.slice(0, 8)}...`}</span>
+                    <span className="text-xs text-secondary font-bold">{entry.score.toLocaleString()} pts</span>
                   </div>
                   <div className="mt-2 flex items-center gap-4 text-xs text-on-surface-variant">
                     <span>{entry.views} views</span>
@@ -143,7 +143,7 @@ export default function EditorDashboardPage() {
         <div>
           <h2 className="mb-4 flex items-center gap-2 font-headline text-xl font-bold text-on-surface">
             <span className="h-5 w-2 rounded-full bg-tertiary"></span>
-            My Submissions (Closed)
+            My Submissions (Expired)
           </h2>
 
           {isLoading ? (
@@ -152,16 +152,16 @@ export default function EditorDashboardPage() {
                 <div key={i} className="h-20 animate-pulse rounded-xl bg-surface-container-low" />
               ))}
             </div>
-          ) : myClosedEntries.length === 0 ? (
+          ) : myExpiredEntries.length === 0 ? (
             <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-6 text-center">
-              <p className="text-sm text-on-surface-variant">No closed pools yet.</p>
+              <p className="text-sm text-on-surface-variant">No expired pools yet.</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {myClosedEntries.map((entry) => (
+              {myExpiredEntries.map((entry) => (
                 <div key={entry.pda_address} className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-on-surface">#{entry.pool_pda.slice(0, 8)}...</span>
+                    <span className="text-sm font-medium text-on-surface">{(entry as any).pool_video_title || `#${entry.pool_pda.slice(0, 8)}...`}</span>
                     <div className="flex items-center gap-2">
                       {entry.claimed ? (
                         <span className="rounded-full bg-green-500/20 px-2 py-1 text-xs font-bold text-green-400">

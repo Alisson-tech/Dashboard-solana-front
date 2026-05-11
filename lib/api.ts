@@ -93,8 +93,8 @@ export const coreApi = {
     return data
   },
 
-  updatePoolMetadata: async (poolPda: string, name: string, hashtag?: string) => {
-    const { data } = await apiClient.post(`/pools/${poolPda}/metadata`, { name, hashtag })
+  updatePoolMetadata: async (poolPda: string, name: string, hashtag?: string, videoTitle?: string) => {
+    const { data } = await apiClient.post(`/pools/${poolPda}/metadata`, { name, hashtag, video_title: videoTitle })
     return data
   },
 
@@ -105,16 +105,12 @@ export const coreApi = {
 
   getBatchPoolMetadata: async (pdas: string[]) => {
     if (!pdas.length) return {};
-    const { data } = await apiClient.get<Record<string, {name: string | null, hashtag: string | null, video_title: string | null}>>(`/pools/batch-metadata`, {
-      params: { pdas: pdas.join(',') }
-    })
+    const { data } = await apiClient.post<Record<string, {name?: string; hashtag?: string; video_title?: string}>>('/pools/batch-metadata', { pdas })
     return data
   },
 
-  batchEnrichTitles: async (items: { pda: string; video_id: string }[]) => {
-    if (!items.length) return { updated: 0, skipped: 0 }
-    const { data } = await apiClient.post<{ updated: number; skipped: number }>('/pools/batch-enrich-titles', items)
-    return data
+  batchEnrichTitles: async (_items: { pda: string; video_id: string }[]) => {
+    return { updated: 0, skipped: 0 }
   },
 
   getPoolEntries: async (poolPda: string, params?: { page?: number; limit?: number }) => {
